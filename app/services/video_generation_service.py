@@ -511,6 +511,9 @@ class VideoGenerationService:
         image_prompt = scene_data.get('image_prompt')
         text_overlay_prompt = scene_data.get('text_overlay_prompt')
         
+        # Get scene ID for product image fetching
+        scene_id = scene_data['id']
+        
         # Get product images from the scenario's product
         product_images = await self._get_product_images_for_scene(scene_id)
         
@@ -523,7 +526,6 @@ class VideoGenerationService:
             raise Exception(f"Insufficient credits for image generation: {credit_check.get('reason', 'Unknown error')}")
         
         # Get resolution mapping for image generation
-        scene_id = scene_data['id']
         video_resolution = self._get_scenario_resolution(scene_id)
         resolution_mapping = self._get_resolution_mapping(video_resolution)
         image_ratio = resolution_mapping['image_ratio']
