@@ -811,6 +811,38 @@ class MergingService:
             raise
 
 
+    def _check_video_has_audio(self, video_path: str) -> bool:
+        """Check if video file has an audio stream using FFprobe."""
+        try:
+            cmd = [
+                'ffprobe',
+                '-v', 'quiet',
+                '-select_streams', 'a',
+                '-show_entries', 'stream=codec_type',
+                '-of', 'csv=p=0',
+                video_path
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+
+            if result.returncode == 0:
+                # If there's an audio stream, ffprobe will output "audio"
+                has_audio = "audio" in result.stdout.strip()
+                logger.info(f"Video {video_path} has audio: {has_audio}")
+                return has_audio
+            else:
+                logger.warning(f"Could not check for audio stream, assuming no audio: {result.stderr}")
+                return False
+
+        except Exception as e:
+            logger.warning(f"Failed to check for audio stream: {e}, assuming no audio")
+            return False
+
     def _get_video_duration(self, video_path: str) -> int:
         """Get video duration in seconds using FFmpeg."""
         try:
@@ -846,6 +878,13 @@ class MergingService:
     def _merge_audio_with_video(self, video_path: str, audio_path: str, task_id: str) -> str:
         """Merge audio with video using FFmpeg, properly mixing video sound effects with voice script."""
         try:
+            # First check if the video has an audio stream
+            has_audio = self._check_video_has_audio(video_path)
+            
+            if not has_audio:
+                logger.info("Video has no audio stream, using voice-only approach")
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+
             # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio.mp4")
@@ -897,6 +936,13 @@ class MergingService:
     def _merge_audio_with_video_simple(self, video_path: str, audio_path: str, task_id: str) -> str:
         """Fallback method for merging audio with video using a simpler approach."""
         try:
+            # First check if the video has an audio stream
+            has_audio = self._check_video_has_audio(video_path)
+            
+            if not has_audio:
+                logger.info("Video has no audio stream, using voice-only approach")
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+
             # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_simple.mp4")
@@ -934,6 +980,57 @@ class MergingService:
 
         except Exception as e:
             logger.error(f"Failed to merge audio with video (simple): {e}")
+            raise
+
+    def _merge_audio_with_video_voice_priority(self, video_path: str, audio_path: str, task_id: str) -> str:
+        """Voice-priority fallback method for merging audio with video."""
+        try:
+            # First check if the video has an audio stream
+            has_audio = self._check_video_has_audio(video_path)
+            
+            if not has_audio:
+                logger.info("Video has no audio stream, using voice-only approach")
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+
+            # Create temporary directory for merged video
+            temp_dir = tempfile.mkdtemp()
+            merged_path = os.path.join(temp_dir, "video_with_audio_voice_priority.mp4")
+
+            # Voice-priority approach: prioritize voice script over video audio
+            # This method tries to mix but gives priority to the voice script
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', video_path,      # Input 0: video with sound effects
+                '-i', audio_path,      # Input 1: voice script audio
+                '-c:v', 'copy',        # Copy video codec
+                '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',  # Mix with voice priority
+                '-map', '0:v',         # Map video from first input
+                '-map', '[out]',       # Map the mixed audio output
+                '-c:a', 'aac',         # Convert mixed audio to AAC
+                '-shortest',           # End when shortest input ends
+                merged_path
+            ]
+
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minutes timeout
+            )
+
+            if result.returncode != 0:
+                # If voice-priority mixing fails, fall back to basic approach
+                logger.warning(f"Voice-priority audio mixing failed, trying basic approach: {result.stderr}")
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+
+            if not os.path.exists(merged_path):
+                raise Exception("Audio-merged video file was not created")
+
+            logger.info(f"Successfully merged audio with video using voice-priority approach")
+            return merged_path
+
+        except Exception as e:
+            logger.error(f"Failed to merge audio with video (voice-priority): {e}")
             raise
 
     def _merge_audio_with_video_basic(self, video_path: str, audio_path: str, task_id: str) -> str:
