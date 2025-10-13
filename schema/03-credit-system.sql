@@ -109,4 +109,4 @@ CREATE TRIGGER update_credit_usage_tracking_updated_at
     EXECUTE FUNCTION update_updated_at_column();
 
 -- Add comment to document the new credit system
-COMMENT ON TABLE public.credit_actions IS 'Credit costs: Audio=2, Video=25, Image=2, Scraping=1, Scenario=2, Upscale=5 per second'; 
+COMMENT ON TABLE public.credit_actions IS 'Credit costs: Audio=2, Video=25, Image=2, Scraping=1, Scenario=2. Updated 2024-12-19: Removed upscale_video action and updated generate_image description for Vertex AI/Flux API'; 

@@ -235,10 +235,8 @@ class SaveScenarioService:
             for i, scene in enumerate(scenes):
                 scene_data = {
                     "scenario_id": scenario_id,
-                    "user_id": user_id,
                     "scene_number": scene.scene_number,
-                    "title": scene.description,  # Using description as title
-                    "description": scene.description,
+                    "description": scene.description,  # Temporary: keep until DB schema is updated
                     "duration": scene.duration,
                     "status": "pending",
                     "image_prompt": scene.image_prompt,

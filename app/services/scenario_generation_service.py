@@ -317,11 +317,17 @@ DEMOGRAPHIC DETECTION REQUIREMENTS:
  4. TEXT OVERLAY REQUIREMENTS:
     - For each scene, determine if text overlay is needed
     - If text overlay is needed, generate a textOverlayPrompt that includes:
-      * The exact text content to overlay
-      * Position (center, top, bottom, left, right)
-      * Color (white, black, etc.)
-      * Style (large, bold, sans-serif, with shadow, etc.)
-      * Example: "Overlay the text 'Amazing Product!' in large white sans-serif letters with a slight shadow, centered on the image"
+      * The exact text content to overlay (keep it short and impactful - 1-3 words maximum)
+      * Position (avoid covering the main product - use corners, edges, or empty spaces)
+      * Color (choose colors that contrast well with the background - white, black, or brand colors)
+      * Style (vary the style - bold, elegant, modern, playful, minimalist, etc.)
+      * Size (appropriate size relative to the image - not too large to avoid covering product)
+      * Example: "Add 'AMAZING!' in bold white letters with a subtle shadow, positioned in the top-right corner, medium size, elegant sans-serif font"
+      * Example: "Overlay 'NEW' in bright red bold letters, positioned in the bottom-left corner, small size, modern font with slight outline"
+      * Example: "Add 'SALE' in yellow bold letters with black outline, positioned at the top center, small size, impact font"
+    - IMPORTANT: Never cover the main product or important visual elements
+    - IMPORTANT: Vary text styles and positions across different scenes
+    - IMPORTANT: Keep text content short, impactful, and relevant to the scene
     - If no text overlay is needed, set textOverlayPrompt to null or empty string
  5. Generate a compelling thumbnailPrompt for the video thumbnail that:
     - Captures the essence of the video content and product
@@ -333,6 +339,14 @@ DEMOGRAPHIC DETECTION REQUIREMENTS:
  6. THUMBNAIL TEXT OVERLAY REQUIREMENTS:
     - Determine if thumbnail needs text overlay
     - If needed, generate thumbnailTextOverlayPrompt with same format as scene text overlays
+    - Use short, impactful text (1-3 words maximum)
+    - Position strategically to avoid covering the main product
+    - Choose colors that create strong contrast with the background
+    - Vary the style (bold, elegant, modern, playful, minimalist, etc.)
+    - Example: "Add 'MUST HAVE!' in bold white letters with black outline, positioned in the top-right corner, medium size, impact font"
+    - Example: "Overlay 'LIMITED' in bright orange bold letters, positioned in the bottom-left corner, small size, modern sans-serif font"
+    - IMPORTANT: Never cover the main product or important visual elements
+    - IMPORTANT: Make text highly visible and readable for social media
     - If not needed, set thumbnailTextOverlayPrompt to null or empty string
  5. Content must be family-friendly, professional, and pass content moderation
  6. Maintain consistent characters, settings, and visual style throughout
@@ -394,7 +408,7 @@ Ensure all content is family-friendly, professional, and passes content moderati
                             "title": {"type": "string"},
                             "description": {"type": "string"},
                             "thumbnailPrompt": {"type": "string", "description": "Detailed prompt for generating an eye-catching thumbnail image that represents the video content"},
-                            "thumbnailTextOverlayPrompt": {"type": "string", "description": "Thumbnail text overlay prompt containing text, position, color and style. Null or empty if no text overlay needed."},
+                            "thumbnailTextOverlayPrompt": {"type": "string", "description": "Thumbnail text overlay prompt containing short impactful text (1-3 words), strategic position to avoid covering product, high contrast colors, varied styles, and social media optimized visibility. Null or empty if no text overlay needed."},
                             "detectedDemographics": {
                                 "type": "object",
                                 "required": ["targetGender", "ageGroup", "productType", "demographicContext"],
@@ -417,7 +431,7 @@ Ensure all content is family-friendly, professional, and passes content moderati
                                         "imagePrompt": {"type": "string"},
                                         "visualPrompt": {"type": "string"},
                                         "imageReasoning": {"type": "string"},
-                                        "textOverlayPrompt": {"type": "string", "description": "Text overlay prompt containing text, position, color and style. Null or empty if no text overlay needed."}
+                                        "textOverlayPrompt": {"type": "string", "description": "Text overlay prompt containing short impactful text (1-3 words), strategic position to avoid covering product, contrasting colors, varied styles, and appropriate size. Null or empty if no text overlay needed."}
                                     }
                                 }
                             },
