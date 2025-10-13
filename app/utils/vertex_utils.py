@@ -546,7 +546,7 @@ class VertexManager:
             logger.info("Generating upscaled image...")
             upscaled_result = self.client.models.edit_image(
                 model="imagen-3.0-capability-001",
-                prompt="Upscale the image to the target resolution while preserving all existing content, text, and visual elements exactly as they are. Do not modify, add, or remove any content.",
+                prompt=prompt,
                 reference_images=[raw_ref, mask_ref],
                 config=EditImageConfig(
                     edit_mode="EDIT_MODE_OUTPAINT",
@@ -818,7 +818,7 @@ class VertexManager:
             logger.info("Generating upscaled image with text overlay...")
             upscaled_result = self.client.models.edit_image(
                 model="imagen-3.0-capability-001",
-                prompt="Upscale the image to the target resolution while preserving all existing content, text, and visual elements exactly as they are. Do not modify, add, or remove any content.",
+                prompt="Upscale the image size only. Don't add any extra text.",
                 reference_images=[raw_ref, mask_ref],
                 config=EditImageConfig(
                     edit_mode="EDIT_MODE_OUTPAINT",
