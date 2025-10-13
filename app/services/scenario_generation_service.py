@@ -18,7 +18,7 @@ from app.models import (
     Scene, AudioScript, DetectedDemographics, TaskStatus
 )
 
-from app.utils.vertex_utils import generate_image_with_recontext_and_upscale, vertex_manager
+from app.utils.vertex_utils import generate_image_with_recontext_and_upscale, add_text_overlay_to_image, vertex_manager
 from app.utils.task_management import (
     create_task, start_task, update_task_progress,
     complete_task, fail_task, TaskType, TaskStatus as TMStatus
@@ -314,21 +314,26 @@ DEMOGRAPHIC DETECTION REQUIREMENTS:
     - Include camera proximity/position descriptions
     - Specify lighting conditions
     - Include camera settings and effects
-    - TEXT CONTENT REQUIREMENTS:
-      * Clearly specify the exact position of text in the image/video
-      * Define text style and appearance
-      * Wrap ALL text content that appears in images/videos with double quotes ("") or single quotes ('')
-      * Specify text size relative to image
- 4. Generate a compelling thumbnailPrompt for the video thumbnail that:
+ 4. TEXT OVERLAY REQUIREMENTS:
+    - For each scene, determine if text overlay is needed
+    - If text overlay is needed, generate a textOverlayPrompt that includes:
+      * The exact text content to overlay
+      * Position (center, top, bottom, left, right)
+      * Color (white, black, etc.)
+      * Style (large, bold, sans-serif, with shadow, etc.)
+      * Example: "Overlay the text 'Amazing Product!' in large white sans-serif letters with a slight shadow, centered on the image"
+    - If no text overlay is needed, set textOverlayPrompt to null or empty string
+ 5. Generate a compelling thumbnailPrompt for the video thumbnail that:
     - Captures the essence of the video content and product
     - Is optimized for social media (eye-catching, high contrast)
     - Includes style and mood elements from the video
     - Targets the detected demographic audience
     - Follows Vertex AI image generation best practices
-    - Includes camera positioning, lighting, and detailed text requirements:
-      * Specify exact text position
-      * Define text style and appearance
-      * Wrap all text content with quotes and specify text size relative to image
+    - Includes camera positioning and lighting
+ 6. THUMBNAIL TEXT OVERLAY REQUIREMENTS:
+    - Determine if thumbnail needs text overlay
+    - If needed, generate thumbnailTextOverlayPrompt with same format as scene text overlays
+    - If not needed, set thumbnailTextOverlayPrompt to null or empty string
  5. Content must be family-friendly, professional, and pass content moderation
  6. Maintain consistent characters, settings, and visual style throughout
  7. Base content on actual product capabilities - no unrealistic scenarios
@@ -389,6 +394,7 @@ Ensure all content is family-friendly, professional, and passes content moderati
                             "title": {"type": "string"},
                             "description": {"type": "string"},
                             "thumbnailPrompt": {"type": "string", "description": "Detailed prompt for generating an eye-catching thumbnail image that represents the video content"},
+                            "thumbnailTextOverlayPrompt": {"type": "string", "description": "Thumbnail text overlay prompt containing text, position, color and style. Null or empty if no text overlay needed."},
                             "detectedDemographics": {
                                 "type": "object",
                                 "required": ["targetGender", "ageGroup", "productType", "demographicContext"],
@@ -410,7 +416,8 @@ Ensure all content is family-friendly, professional, and passes content moderati
                                         "duration": {"type": "integer"},
                                         "imagePrompt": {"type": "string"},
                                         "visualPrompt": {"type": "string"},
-                                        "imageReasoning": {"type": "string"}
+                                        "imageReasoning": {"type": "string"},
+                                        "textOverlayPrompt": {"type": "string", "description": "Text overlay prompt containing text, position, color and style. Null or empty if no text overlay needed."}
                                     }
                                 }
                             },
@@ -457,7 +464,8 @@ Ensure all content is family-friendly, professional, and passes content moderati
                     image_prompt=scene_data.get('imagePrompt', f'Generate image for scene {i+1}'),
                     visual_prompt=scene_data.get('visualPrompt', f'Video content for scene {i+1}'),
                     image_reasoning=scene_data.get('imageReasoning', f'Generated for scene {i+1}'),
-                    generated_image_url=None  # Will be populated after image generation
+                    generated_image_url=None,  # Will be populated after image generation
+                    text_overlay_prompt=scene_data.get('textOverlayPrompt', None)
                 )
                 scenes.append(scene)
                 logger.info(f"Created scene: {scene.scene_number}")
@@ -516,7 +524,8 @@ Ensure all content is family-friendly, professional, and passes content moderati
                  resolution=request.resolution,
                  environment=request.environment,
                  thumbnail_prompt=openai_scenario.get('thumbnailPrompt', 'Create an eye-catching thumbnail for this video content'),
-                 thumbnail_url=None  # Will be populated after thumbnail generation
+                 thumbnail_url=None,  # Will be populated after thumbnail generation
+                 thumbnail_text_overlay_prompt=openai_scenario.get('thumbnailTextOverlayPrompt', None)
              )
             
             logger.info(f"Successfully created GeneratedScenario with {len(scenes)} scenes")
@@ -561,7 +570,7 @@ Ensure all content is family-friendly, professional, and passes content moderati
             temp_dir = self._get_temp_dir()
             temp_thumbnail_path = str(temp_dir / f"temp_thumbnail_{thumbnail_uuid}.png")
             
-            # Generate image using Vertex AI recontext and upscale
+            # Step 1: Generate base image using Vertex AI recontext and upscale
             result = generate_image_with_recontext_and_upscale(
                 prompt=enhanced_prompt,
                 product_images=product_images,
@@ -574,12 +583,31 @@ Ensure all content is family-friendly, professional, and passes content moderati
             
             if result and result.get('success'):
                 if result.get('image_saved') and result.get('image_path'):
-                    # Upload the generated image to Supabase and return the URL
-                    try:
+                    base_image_path = result['image_path']
+                    final_image_path = base_image_path
+                    
+                    # Step 2: Add text overlay if needed
+                    if scenario.thumbnail_text_overlay_prompt and scenario.thumbnail_text_overlay_prompt.strip():
+                        logger.info("Adding text overlay to thumbnail...")
+                        text_overlay_result = add_text_overlay_to_image(
+                            image_path=base_image_path,
+                            text_overlay_prompt=scenario.thumbnail_text_overlay_prompt,
+                            target_width=1920,
+                            target_height=1080,
+                            output_path=str(temp_dir / f"thumbnail_with_text_{thumbnail_uuid}.png")
+                        )
                         
-                        # Read the generated image file using the correct path
-                        image_path = result['image_path']
-                        with open(image_path, 'rb') as f:
+                        if text_overlay_result.get('success'):
+                            final_image_path = text_overlay_result['output_path']
+                            logger.info("Text overlay added successfully to thumbnail")
+                        else:
+                            logger.warning(f"Failed to add text overlay to thumbnail: {text_overlay_result.get('error')}")
+                            # Continue with base image if text overlay fails
+                    
+                    # Step 3: Upload the final image to Supabase
+                    try:
+                        # Read the final image file
+                        with open(final_image_path, 'rb') as f:
                             image_data = f.read()
                         
                         # Generate unique filename using the same UUID
@@ -587,7 +615,6 @@ Ensure all content is family-friendly, professional, and passes content moderati
                         
                         # Upload to Supabase storage
                         if supabase_manager.is_connected():
-                            # Upload to generated-content bucket
                             try:
                                 supabase_manager.client.storage.from_('generated-content').upload(
                                     path=filename,
@@ -598,27 +625,35 @@ Ensure all content is family-friendly, professional, and passes content moderati
                                 # Get public URL
                                 public_url = supabase_manager.client.storage.from_('generated-content').get_public_url(filename)
                                 
-                                # Clean up local file
-                                os.unlink(image_path)
+                                # Clean up local files
+                                os.unlink(base_image_path)
+                                if final_image_path != base_image_path and os.path.exists(final_image_path):
+                                    os.unlink(final_image_path)
                                 
                                 logger.info(f"Successfully generated and uploaded thumbnail: {public_url}")
                                 return public_url
                                 
                             except Exception as upload_error:
                                 logger.error(f"Failed to upload thumbnail to Supabase: {upload_error}")
-                                # Clean up local file
-                                if os.path.exists(image_path):
-                                    os.unlink(image_path)
+                                # Clean up local files
+                                if os.path.exists(base_image_path):
+                                    os.unlink(base_image_path)
+                                if final_image_path != base_image_path and os.path.exists(final_image_path):
+                                    os.unlink(final_image_path)
                         else:
                             logger.error("Supabase not connected, cannot upload thumbnail")
-                            # Clean up local file
-                            if os.path.exists(image_path):
-                                os.unlink(image_path)
+                            # Clean up local files
+                            if os.path.exists(base_image_path):
+                                os.unlink(base_image_path)
+                            if final_image_path != base_image_path and os.path.exists(final_image_path):
+                                os.unlink(final_image_path)
                     except Exception as upload_error:
                         logger.error(f"Failed to process generated thumbnail: {upload_error}")
-                        # Clean up local file
-                        if os.path.exists(image_path):
-                            os.unlink(image_path)
+                        # Clean up local files
+                        if os.path.exists(base_image_path):
+                            os.unlink(base_image_path)
+                        if final_image_path != base_image_path and os.path.exists(final_image_path):
+                            os.unlink(final_image_path)
                 else:
                     logger.warning("Thumbnail generation succeeded but image was not saved locally")
             else:

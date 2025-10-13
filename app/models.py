@@ -187,6 +187,7 @@ class Scene(BaseModel):
     visual_prompt: str = Field(..., description="Safe video prompt for video generation")
     image_reasoning: str = Field(..., description="Why this image was chosen for this scene")
     generated_image_url: Optional[str] = Field(None, description="Generated image URL from Vertex AI or Flux API")
+    text_overlay_prompt: Optional[str] = Field(None, description="Text overlay prompt containing text, position, color and style information. NULL or empty if no text overlay needed.")
 
 
 class AudioScript(BaseModel):
@@ -209,6 +210,7 @@ class GeneratedScenario(BaseModel):
     environment: Optional[str] = Field(None, description="Environment context for the video")
     thumbnail_prompt: Optional[str] = Field(None, description="AI-generated prompt for thumbnail image generation")
     thumbnail_url: Optional[str] = Field(None, description="Generated thumbnail image URL from Vertex AI")
+    thumbnail_text_overlay_prompt: Optional[str] = Field(None, description="Thumbnail text overlay prompt containing text, position, color and style information. NULL or empty if no text overlay needed.")
 
 
 class ScenarioGenerationResponse(BaseModel):

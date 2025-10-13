@@ -211,7 +211,8 @@ class SaveScenarioService:
                 "audio_script": json.dumps(scenario.audio_script.dict()),
                 "total_duration": scenario.total_duration,
                 "resolution": scenario.resolution,  # Default resolution, can be made configurable
-                "environment": scenario.environment
+                "environment": scenario.environment,
+                "thumbnail_text_overlay_prompt": scenario.thumbnail_text_overlay_prompt
             }
             
             result = supabase_manager.client.table('video_scenarios').insert(scenario_data).execute()
@@ -234,14 +235,16 @@ class SaveScenarioService:
             for i, scene in enumerate(scenes):
                 scene_data = {
                     "scenario_id": scenario_id,
+                    "user_id": user_id,
                     "scene_number": scene.scene_number,
+                    "title": scene.description,  # Using description as title
                     "description": scene.description,
                     "duration": scene.duration,
                     "status": "pending",
                     "image_prompt": scene.image_prompt,
-                    "image_url": None,  # No image generation needed
                     "visual_prompt": scene.visual_prompt,
-                    "product_reference_image_url": scene.product_reference_image_url,
+                    "image_url": None,  # No image generation needed
+                    "text_overlay_prompt": scene.text_overlay_prompt
                 }
                 
                 result = supabase_manager.client.table('video_scenes').insert(scene_data).execute()

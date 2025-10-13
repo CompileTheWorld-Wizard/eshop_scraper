@@ -20,7 +20,7 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 from app.logging_config import get_logger
-from app.utils.vertex_utils import generate_video_with_prompt_and_image, generate_image_with_recontext_and_upscale, vertex_manager
+from app.utils.vertex_utils import generate_video_with_prompt_and_image, generate_image_with_recontext_and_upscale, add_text_overlay_to_image, vertex_manager
 from app.utils.flux_utils import flux_manager
 from app.utils.supabase_utils import supabase_manager
 from app.utils.credit_utils import credit_manager
@@ -509,6 +509,7 @@ class VideoGenerationService:
         
         # Get required data for image generation
         image_prompt = scene_data.get('image_prompt')
+        text_overlay_prompt = scene_data.get('text_overlay_prompt')
         product_reference_image_url = scene_data.get('product_reference_image_url')
         
         if not image_prompt:
@@ -545,9 +546,11 @@ class VideoGenerationService:
             if product_reference_image_url:
                 temp_dir = self._get_temp_dir()
                 temp_image_path = str(temp_dir / f"temp_image_{uuid.uuid4()}.png")
+                
+                # Step 1: Generate base image with recontext and upscale
                 result = generate_image_with_recontext_and_upscale(
                     prompt=image_prompt,
-                    product_image_url=product_reference_image_url,
+                    product_images=[product_reference_image_url],
                     target_width=target_width,
                     target_height=target_height,
                     output_path=temp_image_path
@@ -564,12 +567,39 @@ class VideoGenerationService:
             if not result.get('image_saved') or not result.get('image_path'):
                 raise Exception("Image was not saved to local storage")
             
-            # Get the local image path
-            local_image_path = result['image_path']
-            if not os.path.exists(local_image_path):
-                raise Exception(f"Generated image file not found at {local_image_path}")
+            # Get the base image path
+            base_image_path = result['image_path']
+            if not os.path.exists(base_image_path):
+                raise Exception(f"Generated image file not found at {base_image_path}")
             
-            logger.info(f"Successfully generated image with Vertex AI for scene {scene_data['id']}")
+            logger.info(f"Successfully generated base image with Vertex AI for scene {scene_data['id']}")
+            
+            # Step 2: Add text overlay if needed
+            final_image_path = base_image_path
+            if text_overlay_prompt and text_overlay_prompt.strip():
+                logger.info("Adding text overlay to scene image...")
+                text_overlay_result = add_text_overlay_to_image(
+                    image_path=base_image_path,
+                    text_overlay_prompt=text_overlay_prompt,
+                    target_width=target_width,
+                    target_height=target_height,
+                    output_path=str(temp_dir / f"scene_with_text_{uuid.uuid4()}.png")
+                )
+                
+                if text_overlay_result.get('success'):
+                    final_image_path = text_overlay_result['output_path']
+                    logger.info("Text overlay added successfully to scene image")
+                    
+                    # Clean up base image since we have the final image with text overlay
+                    try:
+                        os.unlink(base_image_path)
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up base image file {base_image_path}: {cleanup_error}")
+                else:
+                    logger.warning(f"Failed to add text overlay to scene image: {text_overlay_result.get('error')}")
+                    # Continue with base image if text overlay fails
+            
+            local_image_path = final_image_path
             vertex_success = True
             
         except Exception as vertex_error:
