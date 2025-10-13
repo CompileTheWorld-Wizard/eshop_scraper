@@ -587,7 +587,8 @@ class VideoGenerationService:
                     text_overlay_prompt=text_overlay_prompt,
                     target_width=target_width,
                     target_height=target_height,
-                    output_path=str(temp_dir / f"scene_with_text_{uuid.uuid4()}.png")
+                    output_path=str(temp_dir / f"scene_with_text_{uuid.uuid4()}.png"),
+                    skip_upscale=True  # Skip re-upscaling for video generation
                 )
                 
                 if text_overlay_result.get('success'):

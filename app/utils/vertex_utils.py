@@ -718,7 +718,8 @@ class VertexManager:
         text_overlay_prompt: str,
         target_width: int = 1920,
         target_height: int = 1080,
-        output_path: Optional[str] = None
+        output_path: Optional[str] = None,
+        skip_upscale: bool = False
     ) -> Dict[str, Any]:
         """
         Add text overlay to an image using Google Vertex AI's gemini-2.5-flash-image model
@@ -777,61 +778,67 @@ class VertexManager:
             logger.info(f"Text overlay added successfully. Intermediate image saved to: {intermediate_path}")
             logger.info(f"Intermediate image size: {generated_image.size}")
             
-            # Step 2: Upscale the image back to target resolution using imagen-3.0-capability-001
-            logger.info(f"Upscaling image from {generated_image.size} to {target_width}x{target_height}...")
-            
-            # Create the two required images for upscaling (following the same pattern as generate_image_with_recontext_and_upscale)
-            centered_image = self.create_centered_image_with_black_background(
-                Image(image_bytes=open(intermediate_path, "rb").read(), mime_type="image/png"),
-                target_width, target_height
-            )
-            
-            mask_image = self.create_mask_image_with_black_area(
-                Image(image_bytes=open(intermediate_path, "rb").read(), mime_type="image/png"),
-                target_width, target_height
-            )
-            
-            # Convert PIL images to bytes
-            centered_image_bytes = BytesIO()
-            centered_image.save(centered_image_bytes, format='PNG')
-            centered_image_bytes = centered_image_bytes.getvalue()
-            
-            mask_image_bytes = BytesIO()
-            mask_image.save(mask_image_bytes, format='PNG')
-            mask_image_bytes = mask_image_bytes.getvalue()
-            
-            # Create reference images for upscaling
-            raw_ref = RawReferenceImage(
-                reference_image=Image(image_bytes=centered_image_bytes, mime_type="image/png"),
-                reference_id=0,
-            )
-            mask_ref = MaskReferenceImage(
-                reference_id=1,
-                reference_image=Image(image_bytes=mask_image_bytes, mime_type="image/png"),
-                config=MaskReferenceConfig(
-                    mask_mode="MASK_MODE_USER_PROVIDED",
-                    mask_dilation=0.03,
-                ),
-            )
-            
-            # Generate the upscaled image using edit_image
-            logger.info("Generating upscaled image with text overlay...")
-            upscaled_result = self.client.models.edit_image(
-                model="imagen-3.0-capability-001",
-                prompt="Upscale the image size only. Don't add any extra text.",
-                reference_images=[raw_ref, mask_ref],
-                config=EditImageConfig(
-                    edit_mode="EDIT_MODE_OUTPAINT",
-                ),
-            )
-            
-            upscaled_image = upscaled_result.generated_images[0].image
-            
-            # Save the final upscaled image
-            upscaled_image.save(output_path)
-            
-            # Clean up intermediate file
-            os.unlink(intermediate_path)
+            if skip_upscale:
+                # Skip upscaling step - just save the intermediate image as final output
+                logger.info("Skipping upscaling step as requested")
+                generated_image.save(output_path)
+                os.unlink(intermediate_path)
+            else:
+                # Step 2: Upscale the image back to target resolution using imagen-3.0-capability-001
+                logger.info(f"Upscaling image from {generated_image.size} to {target_width}x{target_height}...")
+                
+                # Create the two required images for upscaling (following the same pattern as generate_image_with_recontext_and_upscale)
+                centered_image = self.create_centered_image_with_black_background(
+                    Image(image_bytes=open(intermediate_path, "rb").read(), mime_type="image/png"),
+                    target_width, target_height
+                )
+                
+                mask_image = self.create_mask_image_with_black_area(
+                    Image(image_bytes=open(intermediate_path, "rb").read(), mime_type="image/png"),
+                    target_width, target_height
+                )
+                
+                # Convert PIL images to bytes
+                centered_image_bytes = BytesIO()
+                centered_image.save(centered_image_bytes, format='PNG')
+                centered_image_bytes = centered_image_bytes.getvalue()
+                
+                mask_image_bytes = BytesIO()
+                mask_image.save(mask_image_bytes, format='PNG')
+                mask_image_bytes = mask_image_bytes.getvalue()
+                
+                # Create reference images for upscaling
+                raw_ref = RawReferenceImage(
+                    reference_image=Image(image_bytes=centered_image_bytes, mime_type="image/png"),
+                    reference_id=0,
+                )
+                mask_ref = MaskReferenceImage(
+                    reference_id=1,
+                    reference_image=Image(image_bytes=mask_image_bytes, mime_type="image/png"),
+                    config=MaskReferenceConfig(
+                        mask_mode="MASK_MODE_USER_PROVIDED",
+                        mask_dilation=0.03,
+                    ),
+                )
+                
+                # Generate the upscaled image using edit_image
+                logger.info("Generating upscaled image with text overlay...")
+                upscaled_result = self.client.models.edit_image(
+                    model="imagen-3.0-capability-001",
+                    prompt="Upscale the image to the target resolution while preserving all existing content, text, and visual elements exactly as they are. Do not modify, add, or remove any content.",
+                    reference_images=[raw_ref, mask_ref],
+                    config=EditImageConfig(
+                        edit_mode="EDIT_MODE_OUTPAINT",
+                    ),
+                )
+                
+                upscaled_image = upscaled_result.generated_images[0].image
+                
+                # Save the final upscaled image
+                upscaled_image.save(output_path)
+                
+                # Clean up intermediate file
+                os.unlink(intermediate_path)
             
             logger.info(f"Text overlay and upscaling completed successfully. Final image saved to: {output_path}")
             
@@ -889,11 +896,12 @@ def add_text_overlay_to_image(
     text_overlay_prompt: str,
     target_width: int = 1920,
     target_height: int = 1080,
-    output_path: Optional[str] = None
+    output_path: Optional[str] = None,
+    skip_upscale: bool = False
 ) -> Dict[str, Any]:
-    """Convenience function to add text overlay to an image and upscale it."""
+    """Convenience function to add text overlay to an image and optionally upscale it."""
     return vertex_manager.add_text_overlay_to_image(
-        image_path, text_overlay_prompt, target_width, target_height, output_path
+        image_path, text_overlay_prompt, target_width, target_height, output_path, skip_upscale
     )
 
 
