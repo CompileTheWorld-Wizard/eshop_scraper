@@ -510,7 +510,9 @@ class VideoGenerationService:
         # Get required data for image generation
         image_prompt = scene_data.get('image_prompt')
         text_overlay_prompt = scene_data.get('text_overlay_prompt')
-        product_reference_image_url = scene_data.get('product_reference_image_url')
+        
+        # Get product images from the scenario's product
+        product_images = await self._get_product_images_for_scene(scene_id)
         
         if not image_prompt:
             raise Exception("Image prompt is required for image generation")
@@ -543,21 +545,21 @@ class VideoGenerationService:
             target_width, target_height = self._convert_ratio_to_dimensions(image_ratio)
             
             # Use Vertex AI for image generation with recontext and upscale
-            if product_reference_image_url:
+            if product_images:
                 temp_dir = self._get_temp_dir()
                 temp_image_path = str(temp_dir / f"temp_image_{uuid.uuid4()}.png")
                 
                 # Step 1: Generate base image with recontext and upscale
                 result = generate_image_with_recontext_and_upscale(
                     prompt=image_prompt,
-                    product_images=[product_reference_image_url],
+                    product_images=product_images,
                     target_width=target_width,
                     target_height=target_height,
                     output_path=temp_image_path
                 )
             else:
-                # If no product reference image, skip Vertex AI and go to Flux
-                raise Exception("No product reference image provided for Vertex AI recontext generation")
+                # If no product images, skip Vertex AI and go to Flux
+                raise Exception("No product images provided for Vertex AI recontext generation")
             
             if not result or not result.get('success'):
                 error_msg = result.get('error', 'Unknown error') if result else 'No result returned'
@@ -615,7 +617,7 @@ class VideoGenerationService:
                 # Use Flux API for image generation with both text and reference image
                 result = flux_manager.generate_image_with_prompt_and_image(
                     prompt=image_prompt,
-                    input_image=product_reference_image_url if product_reference_image_url else None,
+                    input_image=product_images[0] if product_images else None,
                     model=settings.BFL_DEFAULT_MODEL,
                     output_path=temp_image_path
                 )
@@ -667,6 +669,59 @@ class VideoGenerationService:
         
         return image_url
     
+    async def _get_product_images_for_scene(self, scene_id: str) -> List[str]:
+        """
+        Get product images for a scene by following the relationship:
+        scene -> scenario -> short -> product -> images
+        
+        Args:
+            scene_id: The UUID of the scene
+            
+        Returns:
+            List of product image URLs (max 3)
+        """
+        try:
+            if not supabase_manager.is_connected():
+                raise Exception("Supabase connection not available")
+
+            # First get the scenario_id from the scene
+            scene_result = supabase_manager.client.table('video_scenes').select(
+                'scenario_id').eq('id', scene_id).execute()
+
+            if not scene_result.data:
+                raise Exception(f"Scene {scene_id} not found")
+
+            scenario_id = scene_result.data[0]['scenario_id']
+
+            # Then get the short_id from the scenario
+            scenario_result = supabase_manager.client.table('video_scenarios').select(
+                'short_id').eq('id', scenario_id).execute()
+
+            if not scenario_result.data:
+                raise Exception(f"Scenario {scenario_id} not found")
+
+            short_id = scenario_result.data[0]['short_id']
+
+            # Then get the product from the short
+            product_result = supabase_manager.client.table('products').select(
+                'images').eq('short_id', short_id).execute()
+
+            if not product_result.data:
+                raise Exception(f"Product not found for short {short_id}")
+
+            images_data = product_result.data[0].get('images', {})
+            if isinstance(images_data, dict):
+                product_images = list(images_data.keys())
+                # Limit to max 3 images
+                return product_images[:3]
+            else:
+                logger.warning(f"Unexpected images format for product: {type(images_data)}")
+                return []
+
+        except Exception as e:
+            logger.error(f"Failed to get product images for scene {scene_id}: {e}")
+            return []
+
     def _get_temp_dir(self) -> Path:
         """Get or create the temp directory for temporary files."""
         project_root = Path(__file__).parent.parent.parent
