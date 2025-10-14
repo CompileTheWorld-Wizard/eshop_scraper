@@ -897,7 +897,7 @@ class MergingService:
             # 1. Take video (with its sound effects) as input 0
             # 2. Take voice script audio as input 1
             # 3. Mix both audio streams using amix filter with volume adjustments
-            # 4. Ensure the output duration matches the video duration
+            # 4. Ensure the output duration matches the longest input duration
             cmd = [
                 'ffmpeg', '-y',
                 '-i', video_path,      # Input 0: video with sound effects
@@ -907,7 +907,7 @@ class MergingService:
                 '-map', '0:v',         # Map video from first input
                 '-map', '[out]',       # Map the mixed audio output
                 '-c:a', 'aac',         # Convert mixed audio to AAC
-                '-shortest',           # End when shortest input ends (video duration)
+                '-longest',            # End when longest input ends
                 merged_path
             ]
 
@@ -1007,7 +1007,7 @@ class MergingService:
                 '-map', '0:v',         # Map video from first input
                 '-map', '[out]',       # Map the mixed audio output
                 '-c:a', 'aac',         # Convert mixed audio to AAC
-                '-shortest',           # End when shortest input ends
+                '-longest',            # End when longest input ends
                 merged_path
             ]
 
@@ -1050,7 +1050,7 @@ class MergingService:
                 '-c:a', 'aac',         # Convert audio to AAC
                 '-map', '0:v',         # Map video from first input
                 '-map', '1:a',         # Map audio from second input (voice script)
-                '-shortest',           # End when shortest input ends
+                '-longest',            # End when longest input ends
                 merged_path
             ]
 
