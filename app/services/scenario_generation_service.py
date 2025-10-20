@@ -352,7 +352,17 @@ DEMOGRAPHIC DETECTION REQUIREMENTS:
  6. Maintain consistent characters, settings, and visual style throughout
  7. Base content on actual product capabilities - no unrealistic scenarios
  8. Generate content suitable for TikTok vertical format (9:16)
- 9. Audio script timing: Hook (20-25%), Main (50-60%), CTA (15-20%) of total duration
+ 9. Audio script timing and duration matching:
+     - CRITICAL: The total audio script must fit EXACTLY within the video duration of {request.video_length} seconds
+     - Hook: 20-25% of total duration (approximately {int(request.video_length * 0.225)} seconds)
+     - Main: 50-60% of total duration (approximately {int(request.video_length * 0.55)} seconds)  
+     - CTA: 15-20% of total duration (approximately {int(request.video_length * 0.175)} seconds)
+     - Calculate word count based on average speaking rate of 150-160 words per minute
+     - Hook should be {int(request.video_length * 0.225 * 2.5)}-{int(request.video_length * 0.25 * 2.5)} words
+     - Main should be {int(request.video_length * 0.5 * 2.5)}-{int(request.video_length * 0.6 * 2.5)} words
+     - CTA should be {int(request.video_length * 0.15 * 2.5)}-{int(request.video_length * 0.2 * 2.5)} words
+     - Total script should be approximately {int(request.video_length * 2.5)} words maximum
+     - Ensure the script flows naturally and maintains engagement throughout the entire duration
  10. LANGUAGE REQUIREMENTS:
     - Generate ALL audio script content (hook, main, cta, hashtags) in target language: "{request.target_language}"
     - Generate ALL text content that appears in images/videos in target language: "{request.target_language}"
@@ -388,6 +398,15 @@ CRITICAL DEMOGRAPHIC CONSISTENCY:
 - If women's product → ONLY female characters in ALL scenes
 - If children's product → ONLY child characters in ALL scenes
 - NEVER mix different character types within the same scenario
+
+CRITICAL AUDIO SCRIPT DURATION MATCHING:
+- The audio script MUST fit exactly within {request.video_length} seconds
+- Calculate word counts based on 150-160 words per minute speaking rate
+- Hook: ~{int(request.video_length * 0.225 * 2.5)} words ({int(request.video_length * 0.225)} seconds)
+- Main: ~{int(request.video_length * 0.55 * 2.5)} words ({int(request.video_length * 0.55)} seconds)
+- CTA: ~{int(request.video_length * 0.175 * 2.5)} words ({int(request.video_length * 0.175)} seconds)
+- Total: ~{int(request.video_length * 2.5)} words maximum
+- Ensure natural pacing and engagement throughout the entire duration
 
 Ensure all content is family-friendly, professional, and passes content moderation checks."""
     
