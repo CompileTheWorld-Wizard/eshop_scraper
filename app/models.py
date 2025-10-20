@@ -166,7 +166,7 @@ class ScenarioGenerationRequest(BaseModel):
     user_id: str = Field(..., description="User ID associated with the task")
     style: str = Field(..., description="Video style (e.g., 'trendy-influencer-vlog', 'cinematic-storytelling')")
     mood: str = Field(..., description="Video mood (e.g., 'energetic', 'calm', 'professional')")
-    video_length: int = Field(..., description="Video length in seconds (15, 20, 30, 45, or 60)")
+    video_length: int = Field(..., description="Video length in seconds (16, 24, 32, 40, 48, 56 or 64)")
     resolution: str = Field(..., description="Video resolution (e.g., '720:1280', '1280:720')")
     target_language: str = Field(..., description="Target language for content (e.g., 'en-US', 'es-ES')")
     environment: Optional[str] = Field(None, description="Environment context for the video (e.g., 'indoor', 'outdoor', 'studio', 'home', 'office')")

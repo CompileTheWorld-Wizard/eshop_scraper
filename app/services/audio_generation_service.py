@@ -421,24 +421,16 @@ REQUIREMENTS:
 - Keep it natural, conversational, and engaging
 - Focus on product benefits and creating desire
 
-CALIBRATION REFERENCE:
-The voice used for this video speaks at approximately {words_per_minute:.1f} words per minute.
-Test Audio Example: "{test_text}" (took {test_audio_duration:.2f} seconds to speak)
-Use this reference to calibrate the script length for the target duration of {scenario.total_duration} seconds.
+VOICE CALIBRATION:
+This voice speaks at {words_per_minute:.1f} words per minute.
+Example: "{test_text}" took {test_audio_duration:.2f} seconds to speak.
 
 OUTPUT FORMAT: Return only the clean spoken script without any formatting, labels, or non-spoken elements."""
 
             user_message = f"""Create a promotional audio script for this product:
 
 Title: {scenario.title}
-Description: {scenario.description}
-Duration: {scenario.total_duration} seconds
-Style: {scenario.style}
-Mood: {scenario.mood}
-
-Calibration: The voice speaks "{test_text}" in {test_audio_duration:.2f} seconds. Use this to gauge the appropriate script length for {scenario.total_duration} seconds.
-
-Remember: Write ONLY what will be spoken. No stage directions, music cues, emojis, or brackets."""
+Description: {scenario.description}"""
 
             logger.info("Sending request to OpenAI for script generation...")
             response = self.openai_client.chat.completions.create(
