@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 
 
 class TaskStatus(str, Enum):
+    QUEUED = "queued"
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -190,19 +191,11 @@ class Scene(BaseModel):
     text_overlay_prompt: Optional[str] = Field(None, description="Text overlay prompt containing text, position, color and style information. NULL or empty if no text overlay needed.")
 
 
-class AudioScript(BaseModel):
-    hook: str = Field(..., description="Attention-grabbing opening (20-25% of total duration)")
-    main: str = Field(..., description="Main content about product benefits (50-60% of total duration)")
-    cta: str = Field(..., description="Call-to-action (15-20% of total duration)")
-    hashtags: List[str] = Field(..., description="5-8 relevant hashtags")
-
-
 class GeneratedScenario(BaseModel):
     title: str = Field(..., description="Scenario title")
     description: str = Field(..., description="Brief description of the scenario approach")
     detected_demographics: Optional[DetectedDemographics] = Field(None, description="AI-detected demographic information")
     scenes: List[Scene] = Field(..., description="List of scenes for the video")
-    audio_script: AudioScript = Field(..., description="Audio script with timing")
     total_duration: int = Field(..., description="Total duration of the video")
     style: str = Field(..., description="Style of the video")
     mood: str = Field(..., description="Mood of the video")
@@ -260,6 +253,28 @@ class TestAudioResponse(BaseModel):
     created_at: datetime = Field(..., description="When the test audio was generated")
     is_cached: bool = Field(False, description="Whether this was a cached result")
     message: str = Field(..., description="Status message")
+    test_text: str = Field(..., description="The text that was used to generate the test audio")
+
+
+# Audio Generation Models
+class AudioGenerationRequest(BaseModel):
+    voice_id: str = Field(..., description="ElevenLabs voice ID for audio generation")
+    user_id: str = Field(..., description="User ID associated with the request")
+    short_id: str = Field(..., description="Short ID to generate audio for")
+
+
+class AudioGenerationResponse(BaseModel):
+    voice_id: str = Field(..., description="Voice ID used for audio generation")
+    user_id: str = Field(..., description="User ID who requested the audio")
+    short_id: str = Field(..., description="Short ID the audio was generated for")
+    audio_url: str = Field(..., description="URL of the generated audio")
+    script: str = Field(..., description="Generated audio script")
+    words_per_minute: float = Field(..., description="Detected words per minute from test audio")
+    duration: float = Field(..., description="Duration of the generated audio in seconds")
+    created_at: datetime = Field(..., description="When the audio was generated")
+    is_cached: bool = Field(False, description="Whether this was a cached result")
+    message: str = Field(..., description="Status message")
+    subtitle_timing: Optional[List[Dict[str, Any]]] = Field(None, description="Subtitle timing information")
 
 
 # Session Management Models

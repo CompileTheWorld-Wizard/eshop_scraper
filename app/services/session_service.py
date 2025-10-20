@@ -18,6 +18,7 @@ except ImportError:
 
 from app.config import settings
 from app.models import SessionInfo
+from app.utils.mongodb_manager import MongoDBManager, mongodb_manager
 
 logger = logging.getLogger(__name__)
 
@@ -56,134 +57,12 @@ class Session:
         return cls(**filtered_data)
 
 
-class SessionManager:
-    """MongoDB session management"""
-    
-    def __init__(self, connection_string: str = None, database_name: str = None):
-        self.connection_string = connection_string or getattr(settings, 'MONGODB_URI', 'mongodb://localhost:27017')
-        self.database_name = database_name or getattr(settings, 'MONGODB_DATABASE', 'eshop_scraper')
-        self.client: Optional[MongoClient] = None
-        self.database = None
-        self.sessions_collection = None
-        self._connection_pool_size = getattr(settings, 'MONGODB_POOL_SIZE', 10)
-        self._max_pool_size = getattr(settings, 'MONGODB_MAX_POOL_SIZE', 100)
-        self._server_selection_timeout = getattr(settings, 'MONGODB_SERVER_SELECTION_TIMEOUT', 5000)
-        self._connect_timeout = getattr(settings, 'MONGODB_CONNECT_TIMEOUT', 20000)
-        self._socket_timeout = getattr(settings, 'MONGODB_SOCKET_TIMEOUT', 30000)
-        
-    def connect(self) -> bool:
-        """Establish connection to MongoDB"""
-        if not MONGODB_AVAILABLE:
-            logger.error("MongoDB dependencies not available. Install pymongo.")
-            return False
-            
-        try:
-            logger.info(f"Attempting to connect to MongoDB for sessions at: {self.connection_string}")
-            self.client = MongoClient(
-                self.connection_string,
-                maxPoolSize=self._max_pool_size,
-                serverSelectionTimeoutMS=self._server_selection_timeout,
-                connectTimeoutMS=self._connect_timeout,
-                socketTimeoutMS=self._socket_timeout,
-                retryWrites=True,
-                retryReads=True,
-                minPoolSize=5,
-                maxIdleTimeMS=30000,
-                waitQueueTimeoutMS=5000
-            )
-            
-            # Test connection
-            logger.info("Testing MongoDB connection for sessions...")
-            self.client.admin.command('ping')
-            logger.info("MongoDB ping successful for sessions")
-            
-            self.database = self.client[self.database_name]
-            self.sessions_collection = self.database.sessions
-            
-            # Create indexes for better performance
-            logger.info("Creating MongoDB indexes for sessions...")
-            self._create_indexes()
-            
-            logger.info(f"Successfully connected to MongoDB for sessions: {self.database_name}")
-            return True
-                
-        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-            logger.error(f"Failed to connect to MongoDB for sessions: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error connecting to MongoDB for sessions: {e}")
-            return False
-    
-    def disconnect(self):
-        """Close MongoDB connection"""
-        if self.client:
-            self.client.close()
-            self.client = None
-            self.database = None
-            self.sessions_collection = None
-            logger.info("MongoDB connection closed for sessions")
-    
-    def _create_indexes(self):
-        """Create database indexes for better performance"""
-        try:
-            # Index on short_id for fast lookups
-            self.sessions_collection.create_index(
-                IndexModel([("short_id", ASCENDING)])
-            )
-            
-            # Index on task_id for fast lookups
-            self.sessions_collection.create_index(
-                IndexModel([("task_id", ASCENDING)], unique=True)
-            )
-            
-            # Index on task_type for filtering by task type
-            self.sessions_collection.create_index(
-                IndexModel([("task_type", ASCENDING)])
-            )
-            
-            # Index on status for filtering by status
-            self.sessions_collection.create_index(
-                IndexModel([("status", ASCENDING)])
-            )
-            
-            # Index on created_at for time-based queries
-            self.sessions_collection.create_index(
-                IndexModel([("created_at", DESCENDING)])
-            )
-            
-            # Index on user_id for user-based queries
-            self.sessions_collection.create_index(
-                IndexModel([("user_id", ASCENDING)])
-            )
-            
-            logger.info("MongoDB indexes created successfully for sessions")
-            
-        except Exception as e:
-            logger.warning(f"Failed to create some indexes for sessions: {e}")
-    
-    def health_check(self) -> bool:
-        """Check if MongoDB connection is healthy"""
-        try:
-            if not self.client:
-                return False
-            self.client.admin.command('ping')
-            return True
-        except Exception:
-            return False
-    
-    def ensure_connection(self) -> bool:
-        """Ensure MongoDB connection is active, reconnect if needed"""
-        if not self.health_check():
-            logger.info("MongoDB connection lost for sessions, attempting to reconnect...")
-            return self.connect()
-        return True
-
-
 class SessionService:
     """Service for managing task sessions"""
     
     def __init__(self):
-        self.session_manager = SessionManager()
+        from app.utils.mongodb_manager import mongodb_manager
+        self.session_manager = mongodb_manager
         self.mongodb_available = False
         
     def connect(self) -> bool:

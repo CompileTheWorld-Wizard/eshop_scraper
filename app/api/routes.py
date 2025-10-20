@@ -8,10 +8,10 @@ import os
 
 from app.models import (
     ScrapeRequest, TaskStatusResponse, HealthResponse,
-    TaskStatus, VideoGenerationRequest, VideoGenerationResponse,
+    TaskStatus, TaskPriority, VideoGenerationRequest, VideoGenerationResponse,
     FinalizeShortRequest, FinalizeShortResponse, ImageAnalysisRequest, ImageAnalysisResponse,
     ScenarioGenerationRequest, ScenarioGenerationResponse, SaveScenarioRequest, SaveScenarioResponse,
-    TestAudioRequest, TestAudioResponse
+    TestAudioRequest, TestAudioResponse, AudioGenerationRequest, AudioGenerationResponse
 )
 from app.services.scraping_service import scraping_service
 from app.services.video_generation_service import video_generation_service
@@ -20,6 +20,7 @@ from app.services.image_analysis_service import image_analysis_service
 from app.services.scenario_generation_service import scenario_generation_service
 from app.services.save_scenario_service import save_scenario_service
 from app.services.test_audio_service import test_audio_service
+from app.services.audio_generation_service import audio_generation_service
 from app.services.scheduler_service import get_scheduler_status, run_cleanup_now
 from app.services.session_service import session_service
 from app.config import settings
@@ -28,7 +29,6 @@ from app.security import (
     get_security_stats, security_manager, API_KEYS
 )
 from app.logging_config import get_logger
-from app.models import TaskPriority
 from app.utils.credit_utils import can_perform_action
 
 logger = get_logger(__name__)
@@ -155,7 +155,7 @@ def get_task_status(task_id: str) -> TaskStatusResponse:
     return TaskStatusResponse(
         task_id=task_id,
         status=task_info.get('status', 'unknown'),
-        url=task_info.get('url'),
+        url=task_info.get('url') or "",  # Ensure url is never None
         task_type='scraping',
         progress=task_info.get('progress'),
         message=task_info.get('message'),
@@ -945,7 +945,6 @@ def save_scenario(
             progress=0.0,
             current_step="Starting scenario save process",
             error_message=None,
-            scenario_id=None,
             completed_at=None
         )
         
@@ -980,7 +979,6 @@ def get_save_scenario_task_status(task_id: str):
             progress=task_info.progress,
             current_step=task_info.current_step_name,
             error_message=task_info.error_message,
-            scenario_id=task_info.task_metadata.get('scenario_id') if task_info.task_metadata else None,
             completed_at=task_info.completed_at
         )
         
@@ -1232,4 +1230,52 @@ def get_test_audio(
         
     except Exception as e:
         logger.error(f"Error in test audio endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Test audio request failed: {str(e)}") 
+        raise HTTPException(status_code=500, detail=f"Test audio request failed: {str(e)}")
+
+
+@router.post("/generate-audio", response_model=AudioGenerationResponse)
+def generate_audio(
+    request: AudioGenerationRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> AudioGenerationResponse:
+    """
+    Generate audio for a specific scenario using AI-powered script generation.
+    
+    This endpoint generates audio content for a video scenario by:
+    1. Checking for existing test audio or generating it
+    2. Analyzing the audio speed (words per minute)
+    3. Generating an appropriate script using OpenAI
+    4. Creating the final audio using ElevenLabs
+    
+    Returns the audio generation result directly.
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        logger.info(f"Starting audio generation for short {request.short_id} with voice {request.voice_id} by user {request.user_id}")
+
+        # Check if user has enough credits
+        if not can_perform_action(request.user_id, "generate_audio"):
+            raise HTTPException(
+                status_code=402, 
+                detail="Insufficient credits for audio generation"
+            )
+
+        # Generate audio directly and return result
+        result = audio_generation_service.generate_audio(request)
+        
+        logger.info(f"Successfully generated audio for short {request.short_id}")
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in audio generation endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Audio generation failed: {str(e)}")
+

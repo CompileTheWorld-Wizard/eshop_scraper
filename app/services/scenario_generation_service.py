@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from app.models import (
     ScenarioGenerationRequest, ScenarioGenerationResponse, GeneratedScenario,
-    Scene, AudioScript, DetectedDemographics, TaskStatus
+    Scene, DetectedDemographics, TaskStatus
 )
 
 from app.utils.vertex_utils import generate_image_with_recontext_and_upscale, add_text_overlay_to_image, vertex_manager
@@ -239,7 +239,7 @@ class ScenarioGenerationService:
 
             # Validate that we have the required fields
             required_fields = ['title', 'description', 'scenes',
-                'audioScript', 'detectedDemographics', 'thumbnailPrompt']
+                'detectedDemographics', 'thumbnailPrompt']
             missing_fields = [
                 field for field in required_fields if field not in generated_scenario]
             if missing_fields:
@@ -252,9 +252,6 @@ class ScenarioGenerationService:
                     generated_scenario['description'] = 'AI-generated video scenario'
                 if 'scenes' not in generated_scenario:
                     generated_scenario['scenes'] = []
-                if 'audioScript' not in generated_scenario:
-                    generated_scenario['audioScript'] = {
-                        'hook': '', 'main': '', 'cta': '', 'hashtags': []}
                 if 'detectedDemographics' not in generated_scenario:
                     generated_scenario['detectedDemographics'] = {
                         'targetGender': 'unisex',
@@ -352,19 +349,7 @@ DEMOGRAPHIC DETECTION REQUIREMENTS:
  6. Maintain consistent characters, settings, and visual style throughout
  7. Base content on actual product capabilities - no unrealistic scenarios
  8. Generate content suitable for TikTok vertical format (9:16)
- 9. Audio script timing and duration matching:
-     - CRITICAL: The total audio script must fit EXACTLY within the video duration of {request.video_length} seconds
-     - Hook: 20-25% of total duration (approximately {int(request.video_length * 0.225)} seconds)
-     - Main: 50-60% of total duration (approximately {int(request.video_length * 0.55)} seconds)  
-     - CTA: 15-20% of total duration (approximately {int(request.video_length * 0.175)} seconds)
-     - Calculate word count based on average speaking rate of 150-160 words per minute
-     - Hook should be {int(request.video_length * 0.225 * 2.5)}-{int(request.video_length * 0.25 * 2.5)} words
-     - Main should be {int(request.video_length * 0.5 * 2.5)}-{int(request.video_length * 0.6 * 2.5)} words
-     - CTA should be {int(request.video_length * 0.15 * 2.5)}-{int(request.video_length * 0.2 * 2.5)} words
-     - Total script should be approximately {int(request.video_length * 2.5)} words maximum
-     - Ensure the script flows naturally and maintains engagement throughout the entire duration
- 10. LANGUAGE REQUIREMENTS:
-    - Generate ALL audio script content (hook, main, cta, hashtags) in target language: "{request.target_language}"
+ 9. LANGUAGE REQUIREMENTS:
     - Generate ALL text content that appears in images/videos in target language: "{request.target_language}"
     - This includes any text overlays, captions, product names, descriptions, or visual text elements
     - Ensure all visual prompts specify text content in the target language
@@ -399,15 +384,6 @@ CRITICAL DEMOGRAPHIC CONSISTENCY:
 - If children's product → ONLY child characters in ALL scenes
 - NEVER mix different character types within the same scenario
 
-CRITICAL AUDIO SCRIPT DURATION MATCHING:
-- The audio script MUST fit exactly within {request.video_length} seconds
-- Calculate word counts based on 150-160 words per minute speaking rate
-- Hook: ~{int(request.video_length * 0.225 * 2.5)} words ({int(request.video_length * 0.225)} seconds)
-- Main: ~{int(request.video_length * 0.55 * 2.5)} words ({int(request.video_length * 0.55)} seconds)
-- CTA: ~{int(request.video_length * 0.175 * 2.5)} words ({int(request.video_length * 0.175)} seconds)
-- Total: ~{int(request.video_length * 2.5)} words maximum
-- Ensure natural pacing and engagement throughout the entire duration
-
 Ensure all content is family-friendly, professional, and passes content moderation checks."""
     
     def _get_scenario_generation_function(self) -> Dict[str, Any]:
@@ -421,7 +397,7 @@ Ensure all content is family-friendly, professional, and passes content moderati
                 "properties": {
                     "scenario": {
                         "type": "object",
-                        "required": ["title", "description", "scenes", "audioScript", "detectedDemographics", "thumbnailPrompt"],
+                        "required": ["title", "description", "scenes", "detectedDemographics", "thumbnailPrompt"],
                         "properties": {
                             "scenarioId": {"type": "string"},
                             "title": {"type": "string"},
@@ -452,16 +428,6 @@ Ensure all content is family-friendly, professional, and passes content moderati
                                         "imageReasoning": {"type": "string"},
                                         "textOverlayPrompt": {"type": "string", "description": "Text overlay prompt containing short impactful text (1-3 words), strategic position to avoid covering product, contrasting colors, varied styles, and appropriate size. Null or empty if no text overlay needed."}
                                     }
-                                }
-                            },
-                            "audioScript": {
-                                "type": "object",
-                                "required": ["hook", "main", "cta", "hashtags"],
-                                "properties": {
-                                    "hook": {"type": "string"},
-                                    "main": {"type": "string"},
-                                    "cta": {"type": "string"},
-                                    "hashtags": {"type": "array", "items": {"type": "string"}}
                                 }
                             }
                         }
@@ -519,19 +485,6 @@ Ensure all content is family-friendly, professional, and passes content moderati
                 scenes.append(default_scene)
                 logger.info("Created default scene")
             
-            # Validate and create audio script with fallbacks
-            audio_script_data = openai_scenario.get('audioScript', {})
-            if not isinstance(audio_script_data, dict):
-                logger.warning(f"Expected audioScript to be a dictionary, got {type(audio_script_data)}. Creating default.")
-                audio_script_data = {}
-            
-            audio_script = AudioScript(
-                hook=audio_script_data.get('hook', 'Welcome to our amazing product!'),
-                main=audio_script_data.get('main', 'This product will solve all your problems.'),
-                cta=audio_script_data.get('cta', 'Get yours today!'),
-                hashtags=audio_script_data.get('hashtags', ['#product', '#amazing', '#musthave'])
-            )
-            
             # Validate and create demographics with fallbacks
             demographics_data = openai_scenario.get('detectedDemographics', {})
             if not isinstance(demographics_data, dict):
@@ -550,7 +503,6 @@ Ensure all content is family-friendly, professional, and passes content moderati
                  description=openai_scenario.get('description', ''),
                  detected_demographics=demographics,
                  scenes=scenes,
-                 audio_script=audio_script,
                  total_duration=request.video_length,
                  style=request.style,
                  mood=request.mood,

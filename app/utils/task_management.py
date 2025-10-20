@@ -23,7 +23,9 @@ except ImportError:
 
 from ..config import settings
 from .url_utils import generate_task_id
+from .mongodb_manager import MongoDBManager, mongodb_manager
 from ..services.session_service import session_service
+from ..models import TaskStatus, TaskPriority
 
 logger = logging.getLogger(__name__)
 
@@ -38,26 +40,7 @@ class TaskType(str, Enum):
     IMAGE_ANALYSIS = "image_analysis"
     SCENARIO_GENERATION = "scenario_generation"
     SAVE_SCENARIO = "save_scenario"
-
-
-class TaskStatus(str, Enum):
-    """Task status enumeration"""
-    QUEUED = "queued"
-    PENDING = "pending"
-    RUNNING = "running"
-    FAILED = "failed"
-    COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    TIMEOUT = "timeout"
-    RETRYING = "retrying"
-
-
-class TaskPriority(str, Enum):
-    """Task priority enumeration"""
-    LOW = "low"
-    NORMAL = "normal"
-    HIGH = "high"
-    URGENT = "urgent"
+    AUDIO_GENERATION = "audio_generation"
 
 
 @dataclass
@@ -116,140 +99,15 @@ class Task:
         return cls(**filtered_data)
 
 
-class MongoDBManager:
-    """MongoDB connection and operation manager"""
-    
-    def __init__(self, connection_string: str = None, database_name: str = None):
-        self.connection_string = connection_string or getattr(settings, 'MONGODB_URI', 'mongodb://localhost:27017')
-        self.database_name = database_name or getattr(settings, 'MONGODB_DATABASE', 'eshop_scraper')
-        self.client: Optional[MongoClient] = None
-        self.database = None
-        self.tasks_collection = None
-        self._connection_pool_size = getattr(settings, 'MONGODB_POOL_SIZE', 10)
-        self._max_pool_size = getattr(settings, 'MONGODB_MAX_POOL_SIZE', 100)
-        self._server_selection_timeout = getattr(settings, 'MONGODB_SERVER_SELECTION_TIMEOUT', 5000)
-        self._connect_timeout = getattr(settings, 'MONGODB_CONNECT_TIMEOUT', 20000)
-        self._socket_timeout = getattr(settings, 'MONGODB_SOCKET_TIMEOUT', 30000)
-        
-    def connect(self) -> bool:
-        """Establish connection to MongoDB"""
-        if not MONGODB_AVAILABLE:
-            logger.error("MongoDB dependencies not available. Install pymongo.")
-            return False
-            
-        try:
-            logger.info(f"Attempting to connect to MongoDB at: {self.connection_string}")
-            self.client = MongoClient(
-                self.connection_string,
-                maxPoolSize=self._max_pool_size,
-                serverSelectionTimeoutMS=self._server_selection_timeout,
-                connectTimeoutMS=self._connect_timeout,
-                socketTimeoutMS=self._socket_timeout,
-                retryWrites=True,
-                retryReads=True,
-                # Connection pool settings for persistence
-                minPoolSize=5,
-                maxIdleTimeMS=30000,
-                waitQueueTimeoutMS=5000
-            )
-            
-            # Test connection
-            logger.info("Testing MongoDB connection...")
-            self.client.admin.command('ping')
-            logger.info("MongoDB ping successful")
-            
-            self.database = self.client[self.database_name]
-            self.tasks_collection = self.database.tasks
-            
-            # Create indexes for better performance
-            logger.info("Creating MongoDB indexes...")
-            self._create_indexes()
-            
-            logger.info(f"Successfully connected to MongoDB: {self.database_name}")
-            return True
-                
-        except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
-            return False
-        except Exception as e:
-            logger.error(f"Unexpected error connecting to MongoDB: {e}")
-            return False
-    
-    def disconnect(self):
-        """Close MongoDB connection"""
-        if self.client:
-            self.client.close()
-            self.client = None
-            self.database = None
-            self.tasks_collection = None
-            logger.info("MongoDB connection closed")
-    
-    def _create_indexes(self):
-        """Create database indexes for better performance"""
-        try:
-            # Index on task_id for fast lookups
-            self.tasks_collection.create_index(
-                IndexModel([("task_id", ASCENDING)], unique=True)
-            )
-            
-            # Index on task_type for filtering by task type
-            self.tasks_collection.create_index(
-                IndexModel([("task_type", ASCENDING)])
-            )
-            
-            # Index on task_status for filtering by status
-            self.tasks_collection.create_index(
-                IndexModel([("task_status", ASCENDING)])
-            )
-            
-            # Index on created_at for time-based queries
-            self.tasks_collection.create_index(
-                IndexModel([("created_at", DESCENDING)])
-            )
-            
-            # Index on user_id for user-based queries
-            self.tasks_collection.create_index(
-                IndexModel([("user_id", ASCENDING)])
-            )
-            
-            logger.info("MongoDB indexes created successfully")
-            
-        except Exception as e:
-            logger.warning(f"Failed to create some indexes: {e}")
-    
-    def health_check(self) -> bool:
-        """Check if MongoDB connection is healthy"""
-        try:
-            if not self.client:
-                return False
-            self.client.admin.command('ping')
-            return True
-        except Exception:
-            return False
-    
-    def ensure_connection(self) -> bool:
-        """Ensure MongoDB connection is active, reconnect if needed"""
-        if not self.health_check():
-            logger.info("MongoDB connection lost, attempting to reconnect...")
-            return self.connect()
-        return True
-    
-    def monitor_connection(self):
-        """Monitor connection health and reconnect if needed"""
-        try:
-            if not self.health_check():
-                logger.warning("MongoDB connection unhealthy, reconnecting...")
-                self.connect()
-        except Exception as e:
-            logger.error(f"Error monitoring MongoDB connection: {e}")
-            self.connect()
-
-
 class TaskDatabaseOperations:
     """Database operations for tasks"""
     
-    def __init__(self, mongodb_manager: MongoDBManager):
-        self.mongodb = mongodb_manager
+    def __init__(self, mongodb_manager: MongoDBManager = None):
+        if mongodb_manager is None:
+            from .mongodb_manager import mongodb_manager
+            self.mongodb = mongodb_manager
+        else:
+            self.mongodb = mongodb_manager
     
     def create_task(self, task: Task) -> bool:
         """Create a new task"""
@@ -371,7 +229,8 @@ class TaskManager:
     """High-level task manager for all task types"""
     
     def __init__(self):
-        self.mongodb = MongoDBManager()
+        from .mongodb_manager import mongodb_manager
+        self.mongodb = mongodb_manager
         self.db_ops = TaskDatabaseOperations(self.mongodb)
         
         # Fallback in-memory storage for when MongoDB is not available

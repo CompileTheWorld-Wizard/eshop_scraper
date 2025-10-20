@@ -24,8 +24,9 @@ A comprehensive, high-performance API for scraping product information from e-co
 The E-commerce Scraper API is a sophisticated system that provides:
 
 - **Intelligent Web Scraping**: Automatic platform detection and extraction
-- **AI-Powered Content Generation**: Image and video generation using Vertex AI and Flux API
+- **AI-Powered Content Generation**: Image, video, and audio generation using Vertex AI, Flux API, and ElevenLabs
 - **Video Processing Pipeline**: Complete video creation and editing workflow
+- **Audio Generation**: AI-powered audio script generation and voice synthesis
 - **Comprehensive Security**: Rate limiting, IP blocking, and API key authentication
 - **Real-time Task Management**: Asynchronous processing with progress tracking
 - **Multi-platform Support**: Amazon, eBay, Shopify, WooCommerce, and more
@@ -52,6 +53,8 @@ The E-commerce Scraper API is a sophisticated system that provides:
 - **VideoGenerationService**: AI video generation with Vertex AI
 - **ScenarioGenerationService**: AI scenario creation for videos
 - **SaveScenarioService**: Scenario persistence and image generation
+- **AudioGenerationService**: AI-powered audio script generation and voice synthesis
+- **TestAudioService**: Test audio generation for voice testing
 - **SessionService**: Task session management
 - **SchedulerService**: Background task cleanup and maintenance
 
@@ -145,6 +148,8 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 # AI Services
 OPENAI_API_KEY=your_openai_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
+ELEVENLABS_DEFAULT_OUTPUT_FORMAT=mp3_44100_128
+ELEVENLABS_DEFAULT_MODEL=eleven_multilingual_v2
 
 # Security (Optional)
 API_KEY_1=your_secure_api_key_here
@@ -229,6 +234,30 @@ Content-Type: application/json
   "video_length": 30,
   "resolution": "720:1280",
   "target_language": "en-US"
+}
+```
+
+#### Test Audio Generation
+```http
+POST /test-audio
+Content-Type: application/json
+
+{
+  "voice_id": "elevenlabs-voice-id",
+  "language": "en-US",
+  "user_id": "uuid-of-the-user"
+}
+```
+
+#### Audio Generation
+```http
+POST /generate-audio
+Content-Type: application/json
+
+{
+  "voice_id": "elevenlabs-voice-id",
+  "user_id": "uuid-of-the-user",
+  "scenario_id": "uuid-of-the-scenario"
 }
 ```
 
@@ -370,6 +399,49 @@ The video generation service automatically maps video resolutions to optimal ima
 | `1280:720` | `1280:720` | `1920:1080` | 16:9 Landscape → Full HD |
 | `720:1280` | `720:1280` | `1080:1920` | 9:16 Portrait → Full HD Portrait |
 | `960:960` | `960:960` | `1024:1024` | 1:1 Square → Full HD Square |
+
+## 🎵 Audio Generation
+
+### Audio Generation Pipeline
+
+The audio generation service provides AI-powered audio content creation with the following workflow:
+
+1. **Test Audio Check**: Checks MongoDB for existing test audio for the voice
+2. **Test Audio Generation**: If not found, generates test audio using ElevenLabs
+3. **Speed Analysis**: Analyzes test audio to determine words per minute (WPM)
+4. **Script Generation**: Uses OpenAI to create contextual audio scripts based on:
+   - Scenario information (title, description, duration, style, mood)
+   - Detected speaking rate from test audio
+   - Product information from the scenario
+5. **Final Audio Generation**: Creates final audio using ElevenLabs with the generated script
+
+### Audio Generation Features
+
+- **Intelligent Script Generation**: AI creates contextually appropriate scripts based on scenario details
+- **Voice Speed Analysis**: Automatically detects optimal speaking rate for each voice
+- **Multi-language Support**: Supports multiple languages for test audio generation
+- **Caching System**: Reuses existing test audio to optimize performance
+- **Credit Integration**: Integrates with the credit system for usage tracking
+- **Asynchronous Processing**: Background task processing with progress updates
+
+### Supported Languages
+
+The test audio service supports the following languages:
+
+- **English**: en-US, en-CA, en-GB
+- **Spanish**: es, es-MX
+- **Portuguese**: pt-BR
+- **French**: fr
+- **German**: de
+- **Dutch**: nl
+- **Chinese**: zh
+- **Japanese**: ja
+- **Arabic**: ar
+
+### Audio Storage Structure
+
+- **Test Audio**: `test-audios/{voice_id}_{language}_{uuid}.mp3`
+- **Generated Audio**: `generated-content/generated-audio/{voice_id}_{uuid}.mp3`
 
 ## 🎬 Video Processing
 
@@ -583,6 +655,33 @@ class EShopScraperClient:
                 return result
             
             time.sleep(2)
+    
+    def generate_audio(self, voice_id, user_id, scenario_id):
+        """Generate audio for a scenario"""
+        response = requests.post(
+            f"{self.base_url}/generate-audio",
+            headers=self.headers,
+            json={
+                "voice_id": voice_id,
+                "user_id": user_id,
+                "scenario_id": scenario_id
+            }
+        )
+        
+        task_data = response.json()
+        task_id = task_data["task_id"]
+        
+        # Poll for completion
+        while True:
+            status_response = requests.get(
+                f"{self.base_url}/api/v1/tasks/{task_id}/result"
+            )
+            result = status_response.json()
+            
+            if result["status"] in ["completed", "failed"]:
+                return result
+            
+            time.sleep(2)
 
 # Usage example
 client = EShopScraperClient(api_key="your_api_key_here")
@@ -591,6 +690,15 @@ client = EShopScraperClient(api_key="your_api_key_here")
 product_result = client.scrape_product("https://www.amazon.com/dp/B08N5WRWNW")
 print(f"Product: {product_result['product_info']['title']}")
 print(f"Price: {product_result['product_info']['price']}")
+
+# Generate audio for a scenario
+audio_result = client.generate_audio(
+    voice_id="elevenlabs-voice-id",
+    user_id="user-uuid",
+    scenario_id="scenario-uuid"
+)
+print(f"Audio URL: {audio_result['audio_url']}")
+print(f"Script: {audio_result['script']}")
 ```
 
 ### cURL Examples
@@ -606,6 +714,22 @@ curl -X POST "http://localhost:8000/api/v1/scrape" \
   }'
 
 # Check status
+curl "http://localhost:8000/api/v1/tasks/{task_id}/result"
+```
+
+#### Audio Generation
+```bash
+# Generate audio for a scenario
+curl -X POST "http://localhost:8000/generate-audio" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_secure_api_key_here" \
+  -d '{
+    "voice_id": "elevenlabs-voice-id",
+    "user_id": "user-uuid",
+    "scenario_id": "scenario-uuid"
+  }'
+
+# Check audio generation status
 curl "http://localhost:8000/api/v1/tasks/{task_id}/result"
 ```
 
@@ -788,7 +912,8 @@ app/
 │   ├── scheduler_service.py         # Background tasks
 │   ├── cache_service.py             # Caching service
 │   ├── merging_service.py           # Video merging
-│   └── test_audio_service.py        # Audio testing
+│   ├── test_audio_service.py        # Audio testing
+│   └── audio_generation_service.py  # AI audio generation
 └── utils/
     ├── __init__.py
     ├── task_management.py      # Task management utilities
@@ -852,5 +977,5 @@ This project is licensed under the MIT License. See the LICENSE file for details
 ---
 
 **Last Updated**: January 2025  
-**Version**: 2.0.0  
+**Version**: 2.1.0  
 **Status**: Production Ready ✅ 
