@@ -276,54 +276,92 @@ class ScenarioGenerationService:
 
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
-        return f"""ROLE:
-You are an expert TikTok/Product Ad video director and the Meta-Prompt Generator for PromoNexAI.
+        return f"""You are an expert TikTok video director. Create a single engaging, viral-worthy scenario that drives conversions.
 
-SOURCE OF TRUTH:
-Use ONLY PRODUCT_JSON and IMAGE_URLS provided. Do NOT invent, redesign, translate, or extrapolate anything beyond the source (no new views, no guessed labels). The product must remain 1:1 identical in form, color, texture, proportions, and branding.
+CRITICAL - FIXED PARAMETERS (DO NOT MODIFY):
+- Style: "{request.style}"
+- Mood: "{request.mood}"  
+- Video Length: {request.video_length} seconds
+- Target Language: "{request.target_language}" 
+{environment_context if environment_context else ""}
 
-CAMERA & VISUAL STYLE (NON-NEGOTIABLE):
-• Orbit-based cinematography ONLY: locked 180°/360° rotations, controlled pans, gentle push/pull.
-• NO parallax or depth reconstruction. If a side/angle is not visible in source, do not invent it; keep to visible angles.
-• Minimalist studio context; brand-matched or neutral background.
-• Product is the hero ≥80% visual focus, centered composition.
-• Human presence only if category = Fashion & Apparel, for ≤4 seconds total, faceless/silhouette, and product still dominates the frame.
-• “Bring to life” effects allowed, subtle and premium (no cartoon look): light sweeps, lens glow, floating dust motes, soft wind for fabrics, elegant micro-mist/water droplets where appropriate. Never add props or environments that are not in the source.
-DYNAMIC VIDEO LENGTH:
-• Never assume a fixed number of scenes. Calculate scene_count from total video length: expected_scene_count = video_length / 8 (rounded to integer).
-• For 24s use 3 scenes × 8s; for 32s use 4 scenes × 8s; for 64s use 8 scenes × 8s; etc.
-• Maintain the narrative pattern across any length:
-  1) Intro Rotation (soft reveal, brand/product name only)
-  2) Full 360° Orbit (texture & shape)
-  3) Macro Hero Detail (craftsmanship)
-  4+) Extended (slow-motion pan, logo fade, ambient light transition) — ONLY if assets allow; never invent unseen sides.
-  
-TEXT & LANGUAGE:
-• All text (overlays, captions) must be in Target Language.
-• Overlays must never cover the product. Keep to corners/edges, short (1-3 words), high contrast, and consistent with brand colors.
-• If brand colors are unknown, use neutral white/black with subtle outline/shadow.
-• Use exact product/brand names from PRODUCT_JSON (no paraphrasing).
+DEMOGRAPHIC DETECTION REQUIREMENTS:
+- You MUST analyze the product information and automatically detect the target demographics
+- Return the detectedDemographics object with targetGender, ageGroup, productType, and demographicContext
+- Use this analysis to maintain CONSISTENT character types throughout ALL scenes
+- If product targets men (e.g., men's shoes), use ONLY male characters/models in ALL scenes
+- If product targets women (e.g., women's makeup), use ONLY female characters/models in ALL scenes
+- If product targets children, use ONLY child/young characters in ALL scenes
+- If product targets seniors, use ONLY mature/elderly characters in ALL scenes
+- NEVER mix different character demographics within the same scenario
 
-DEMOGRAPHIC LOGIC (SAFETY-ALIGNED):
-• Detect target demographics from PRODUCT_JSON (gender/age if explicitly stated). Output detectedDemographics.
-• CONSISTENCY: If characters are required by the request and the category allows (e.g., Fashion), keep one demographic type across all scenes (men/women/kids/seniors). Use silhouettes or faceless modeling only. In all other categories avoid people; prioritize product-only visuals.
-• If demographic cannot be confidently inferred from PRODUCT_JSON, output targetGender:"neutral" and do NOT include any people.
-
-VEO3 VISUAL PROMPT REQUIREMENTS:
-Include: Subject, Context, Action, Style, Camera motion, Composition, Ambiance, plus camera proximity/position, lighting, and simple camera settings (e.g., “24fps, 1/50s, softbox key light”).
-
-VALIDATION & ANTI-HALLUCINATION:
-• If required fields missing → return ok:false with error:"MISSING_DATA" and list missing.
-• If any instruction would alter product appearance, logo, or create unseen views → reject with error:"INTEGRITY_BLOCK".
-• Sum of scene durations must equal video_length exactly. Never exceed 8 seconds per scene.
-
+ REQUIREMENTS:
+ 1. Generate EXACTLY 1 scenario with {expected_scene_count} scenes, each exactly 8 seconds
+ 2. Each scene needs TWO prompts:
+    - imagePrompt: Detailed, descriptive prompt for first frame following Google Vertex Image generation best practices
+    - visualPrompt: Video prompt following Veo3 best practices with these required elements:
+      * Subject: The object, person, animal, or scenery in the video
+      * Context: The background or context where the subject is placed
+      * Action: What the subject is doing
+      * Style: Film style keywords
+      * Camera motion: What the camera is doing
+      * Composition: How the shot is framed
+      * Ambiance: Color and light contribution
+ 3. VISUAL PROMPT REQUIREMENTS:
+    - Include camera proximity/position descriptions
+    - Specify lighting conditions
+    - Include camera settings and effects
+ 4. TEXT OVERLAY REQUIREMENTS:
+    - For each scene, determine if text overlay is needed
+    - If text overlay is needed, generate a textOverlayPrompt that includes:
+      * The exact text content to overlay (keep it short and impactful - 1-3 words maximum)
+      * Position (avoid covering the main product - use corners, edges, or empty spaces)
+      * Color (choose colors that contrast well with the background - white, black, or brand colors)
+      * Style (vary the style - bold, elegant, modern, playful, minimalist, etc.)
+      * Size (appropriate size relative to the image - not too large to avoid covering product)
+      * Example: "Add 'AMAZING!' in bold white letters with a subtle shadow, positioned in the top-right corner, medium size, elegant sans-serif font"
+      * Example: "Overlay 'NEW' in bright red bold letters, positioned in the bottom-left corner, small size, modern font with slight outline"
+      * Example: "Add 'SALE' in yellow bold letters with black outline, positioned at the top center, small size, impact font"
+    - IMPORTANT: Never cover the main product or important visual elements
+    - IMPORTANT: Vary text styles and positions across different scenes
+    - IMPORTANT: Keep text content short, impactful, and relevant to the scene
+    - If no text overlay is needed, set textOverlayPrompt to null or empty string
+ 5. Generate a compelling thumbnailPrompt for the video thumbnail that:
+    - Captures the essence of the video content and product
+    - Is optimized for social media (eye-catching, high contrast)
+    - Includes style and mood elements from the video
+    - Targets the detected demographic audience
+    - Follows Vertex AI image generation best practices
+    - Includes camera positioning and lighting
+ 6. THUMBNAIL TEXT OVERLAY REQUIREMENTS:
+    - Determine if thumbnail needs text overlay
+    - If needed, generate thumbnailTextOverlayPrompt with same format as scene text overlays
+    - Use short, impactful text (1-3 words maximum)
+    - Position strategically to avoid covering the main product
+    - Choose colors that create strong contrast with the background
+    - Vary the style (bold, elegant, modern, playful, minimalist, etc.)
+    - Example: "Add 'MUST HAVE!' in bold white letters with black outline, positioned in the top-right corner, medium size, impact font"
+    - Example: "Overlay 'LIMITED' in bright orange bold letters, positioned in the bottom-left corner, small size, modern sans-serif font"
+    - IMPORTANT: Never cover the main product or important visual elements
+    - IMPORTANT: Make text highly visible and readable for social media
+    - If not needed, set thumbnailTextOverlayPrompt to null or empty string
+ 5. Content must be family-friendly, professional, and pass content moderation
+ 6. Maintain consistent characters, settings, and visual style throughout
+ 7. Base content on actual product capabilities - no unrealistic scenarios
+ 8. Generate content suitable for TikTok vertical format (9:16)
+ 9. LANGUAGE REQUIREMENTS:
+    - Generate ALL text content that appears in images/videos in target language: "{request.target_language}"
+    - This includes any text overlays, captions, product names, descriptions, or visual text elements
+    - Ensure all visual prompts specify text content in the target language
+    - Make sure image prompts include text elements in the target language when relevant
+    - For all text content, specify exact position, style, and wrap with quotes as detailed in text content requirements above
  """
     
     async def _build_user_message(self, request: ScenarioGenerationRequest) -> str:
         """Build user message for OpenAI"""
         product_data = await self._get_product_by_id(request.product_id)
         
-        return f"""Here’s the product information (PRODUCT_JSON):
+        return f"""Here's the product information:
 - Title: {product_data.get('title', 'N/A') if product_data else 'N/A'}
 - Description: {product_data.get('description', 'N/A') if product_data else 'N/A'}
 - Price: {product_data.get('price', 'N/A') if product_data else 'N/A'} {product_data.get('currency', 'USD') if product_data else 'USD'}
@@ -331,17 +369,22 @@ VALIDATION & ANTI-HALLUCINATION:
 - Rating: {product_data.get('rating', 'N/A') if product_data else 'N/A'}
 - Review Count: {product_data.get('review_count', 'N/A') if product_data else 'N/A'}
 
-CRITICAL — FIXED PARAMETERS (DO NOT MODIFY):
+IMPORTANT: Generate content using EXACTLY these parameters:
 - Style: "{request.style}"
-- Mood: "{request.mood}"
+- Mood: "{request.mood}"  
 - Video Length: {request.video_length} seconds
 - Target Language: "{request.target_language}"
+- Environment: "{request.environment if request.environment else ""}"
 
-REMINDERS:
-• Do not add or translate text not present in PRODUCT_JSON except short VO overlays that are purely generic sales phrases (no claims).
-• Never cover the product with text overlays.
-• If demographics are unclear, keep targetGender:"neutral" and avoid people.
-• If any rule conflicts with product integrity, prefer integrity and reject with "INTEGRITY_BLOCK"."""
+CRITICAL DEMOGRAPHIC CONSISTENCY:
+- Analyze the product information to detect target demographics
+- Maintain EXACTLY the same character type throughout ALL scenes
+- If men's product → ONLY male characters in ALL scenes
+- If women's product → ONLY female characters in ALL scenes
+- If children's product → ONLY child characters in ALL scenes
+- NEVER mix different character types within the same scenario
+
+Ensure all content is family-friendly, professional, and passes content moderation checks."""
     
     def _get_scenario_generation_function(self) -> Dict[str, Any]:
         """Get OpenAI function definition for scenario generation"""
@@ -359,16 +402,16 @@ REMINDERS:
                             "scenarioId": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
-                            "thumbnailPrompt": {"type": "string", "description": "<essence, high-contrast, demographic-aligned>"},
-                            "thumbnailTextOverlayPrompt": {"type": "string", "description": "A short caption (1-3 words) in target language, placed safely (top-right, top-left, bottom-right, etc.), using brand or neutral colors (white/black). Style: bold, elegant, modern, or minimal. Size: small or medium. Must never cover the product."},
+                            "thumbnailPrompt": {"type": "string", "description": "Detailed prompt for generating an eye-catching thumbnail image that represents the video content"},
+                            "thumbnailTextOverlayPrompt": {"type": "string", "description": "Thumbnail text overlay prompt containing short impactful text (1-3 words), strategic position to avoid covering product, high contrast colors, varied styles, and social media optimized visibility. Null or empty if no text overlay needed."},
                             "detectedDemographics": {
                                 "type": "object",
                                 "required": ["targetGender", "ageGroup", "productType", "demographicContext"],
                                 "properties": {
-                                    "targetGender": {"type": "string", "description":"male|female|child|senior|neutral"},
-                                    "ageGroup": {"type": "string", "description": "kids|teens|adults|seniors|unknown"},
+                                    "targetGender": {"type": "string"},
+                                    "ageGroup": {"type": "string"},
                                     "productType": {"type": "string"},
-                                    "demographicContext": {"type": "string", "description": "<short rationale>"}
+                                    "demographicContext": {"type": "string"}
                                 }
                             },
                             "scenes": {
@@ -383,7 +426,7 @@ REMINDERS:
                                         "imagePrompt": {"type": "string"},
                                         "visualPrompt": {"type": "string"},
                                         "imageReasoning": {"type": "string"},
-                                        "textOverlayPrompt": {"type": "string", "description": "A short caption (1-3 words) in target language, placed safely (top-right, top-left, bottom-right, etc.), using brand or neutral colors (white/black). Style: bold, elegant, modern, or minimal. Size: small or medium. Must never cover the product."}
+                                        "textOverlayPrompt": {"type": "string", "description": "Text overlay prompt containing short impactful text (1-3 words), strategic position to avoid covering product, contrasting colors, varied styles, and appropriate size. Null or empty if no text overlay needed."}
                                     }
                                 }
                             }
