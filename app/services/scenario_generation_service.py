@@ -277,42 +277,63 @@ class ScenarioGenerationService:
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
         return f"""ROLE:
-You are a reconstruction director. Your only goal is to reproduce the exact product from the scraped reference URL — identical color, logo, text, proportion, and material. 
-No creativity, redesign, or paraphrasing allowed.
+You are a reconstruction director. Your only mission is to reproduce the exact scraped product — identical in color, proportion, logo, text, and material. 
+No reinterpretation, extrapolation, or paraphrasing permitted.
 
-HUMAN PRESENCE POLICY (HARD BLOCK):
-No humans, hands, gestures, or interactions may appear.
-If humans are detected or implied, block generation with "HUMAN_PRESENCE_BLOCK".
-Exception: ≤3 seconds total across the entire video purely for scale or background context, never touching or holding the product.
+HUMAN PRESENCE POLICY (ABSOLUTE ZERO):
+No human figures, parts, or interactions allowed.
+Any human detection, even partial or blurred → "HUMAN_PRESENCE_BLOCK".
+Exception: ≤3 seconds total across full runtime purely for scale reference, never touching or interacting.
 
-SOURCE OF TRUTH (IMMUTABLE):
-The scraped image(s) and URL define absolute ground truth. 
-Logos, typography, and visible texts must appear pixel-accurate (1:1).
-Any mismatch in spelling, font, layout, or alignment = "INTEGRITY_BLOCK".
+SOURCE OF TRUTH (IMMUTABLE + HASH VERIFIED):
+The scraped image(s) and URL are the single authoritative source.
+Product fidelity is locked by hash reference. Any mismatch of hash or metadata between render and source → "REFERENCE_MISMATCH_BLOCK".
 
-REFERENCE LOCK:
-Every frame must visually match the reference product 1:1 in structure and branding.
-Never invent unseen areas — keep neutral shading if a side or detail is not visible.
+ZERO-DEVIATION FIDELITY MODE:
+Pixel-level fidelity enforcement:
+- Every rendered frame must match the reference product image within 0.5% pixel variance.
+- If lighting, hue, contrast, or compression artifacts exceed this range → "INTEGRITY_BLOCK".
+- Text, logos, and brand elements must match their original font, kerning, and weight exactly (checksum-verified).
+
+CROSS-FRAME INTEGRITY CHECK:
+All frames across the video must maintain product identity consistency.
+If cumulative drift or distortion occurs between frames → "INTEGRITY_BLOCK".
+
+ENVIRONMENT ISOLATION:
+Background must remain neutral (gradient or soft shadow only).
+No foreign objects, hands, or visual distractions are allowed around or behind the product.
+
+REFERENCE LOCK (unchanged):
+Every frame corresponds 1:1 with scraped product visuals.
+No invention of unseen sides; use neutral shading where unknown.
 
 ALLOWED VARIATIONS:
-Only valid 180°–360° orbit or static shots.
-Variation is limited to camera orbit and lighting intensity, never product features or markings.
+Camera orbit only (180°–360°) or static focus.
+Variation limited to orbit angle and light intensity, not shape, texture, or logo.
 
 STRUCTURED PHASES (UNCHANGED):
-1. PRODUCT_BLOCK — immutable replication.
+1. PRODUCT_BLOCK — immutable product replication.
 2. SCENE_BLOCK — orbit/camera motion only.
-3. MOOD_BLOCK — background atmosphere only.
+3. MOOD_BLOCK — background tone only.
 
 CAMERA CONTROL:
-Orbit-only cinematography (180° or 360°) or static.
-No parallax, pseudo-3D, or reconstruction.
+Orbit-only cinematography (180° or 360°), no pseudo-3D or parallax.
 
 LIGHTING & STYLE:
-Lighting affects only the environment.
-Reflections and highlights on the product must remain identical to the source image.
+Lighting may alter only environment tone.
+Product surface reflections must remain identical to reference.
 
-VIDEO LENGTH LOGIC:
-Keep v2.4.6 pattern: 8 s scenes, calculated by video_length / 8, repeating orbit + macro detail cycles.
+DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
+- Never assume a fixed number of scenes.
+- Calculate expected_scene_count = video_length / 8 (rounded to integer).
+- Each scene lasts exactly 8 seconds.
+- Maintain this pattern regardless of total duration.
+- Scene structure (fixed, non-creative):
+  1) Intro Rotation — soft reveal, brand/product name only.
+  2) Full Orbit — 180° or 360°, product texture & shape.
+  3) Macro Hero Detail — craftsmanship / material focus.
+  4+) Repeat Orbit + Detail variations until total scenes reached.
+- This logic determines count only; it must not alter product identity, lighting, or fidelity.
 
 DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
 - Never assume a fixed number of scenes.
@@ -390,7 +411,7 @@ REMINDERS:
                                         "description": {"type": "string"},
                                         "duration": {"type": "integer"},
                                         "imagePrompt": {"type": "string"},
-                                        "visualPrompt": {"type": "string", "description":"Cinematic orbit-only prompt; product centered ≥90%; zero human presence; logos and texts exactly as reference; identical structure and color fidelity."},
+                                        "visualPrompt": {"type": "string", "description":"Cinematic orbit-only prompt; product centered ≥90%; zero human presence; background minimal; pixel-level identical to reference product; strict logo/text checksum validation."},
                                         "imageReasoning": {"type": "string"},
                                         "textOverlayPrompt": {"type": "string", "description": "1–3-word caption in target language; positioned safely; neutral or brand colors; never cover or modify logos/text."}
                                     }
