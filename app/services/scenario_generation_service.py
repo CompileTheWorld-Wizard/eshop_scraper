@@ -286,7 +286,13 @@ If a side, texture, or logo is not visible, keep it neutral or shaded, never inv
 
 REFERENCE LOCK:
 Every frame must visually correspond 1:1 to the scraped product. All decisions, lighting, or angles must maintain this fidelity.
-If any render would alter the product's structure, logo, or form, block execution and return error: "INTEGRITY_BLOCK".
+If any render would alter the product’s structure, logo, or form, block execution and return error: "INTEGRITY_BLOCK".
+
+ALLOWED VARIATIONS:
+Multiple scenes are permitted if they display the same product from valid 180° or 360° orbit perspectives.
+Minor changes in camera position, focus, zoom, or lighting intensity are allowed.
+Scene diversity must come exclusively from camera motion and angle, never from product variation.
+No modifications to shape, color, branding, or material are permitted.
 
 STRUCTURED PHASES (NON-MERGEABLE):
 1. PRODUCT_BLOCK (immutable): Fixed product replication. No reinterpretation or retexturing.
@@ -302,6 +308,18 @@ LIGHTING AND STYLE:
 Lighting changes apply to background and atmosphere, not the product pixels.
 Maintain physical light consistency — product reflections must remain identical to the reference.
 Mood settings (romantic, dramatic, etc.) adjust tone of the scene, not product visuals.
+
+DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
+- Never assume a fixed number of scenes.
+- Calculate expected_scene_count = video_length / 8 (rounded to integer).
+- Each scene lasts exactly 8 seconds.
+- Maintain this pattern regardless of total duration.
+- Scene structure (fixed, non-creative):
+  1) Intro Rotation — soft reveal, brand/product name only.
+  2) Full Orbit — 180° or 360°, product texture & shape.
+  3) Macro Hero Detail — craftsmanship / material focus.
+  4+) Repeat Orbit + Detail variations until total scenes reached.
+- This logic determines count only; it must not alter product identity, lighting, or fidelity.
 
 VALIDATION:
 If any uncertain or incomplete product data exists, refuse generation and return "MISSING_REFERENCE".
