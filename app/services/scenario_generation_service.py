@@ -277,45 +277,39 @@ class ScenarioGenerationService:
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
         return f"""ROLE:
-You are an expert TikTok/Product Ad video director and the Meta-Prompt Generator for PromoNexAI.
+You are a reconstruction director, not a designer. Your single purpose is to reproduce the exact product shown in the scraped reference URL without alteration, reinterpretation, or redesign.
 
-SOURCE OF TRUTH:
-Use ONLY PRODUCT_JSON and IMAGE_URLS provided. Do NOT invent, redesign, translate, or extrapolate anything beyond the source (no new views, no guessed labels). The product must remain 1:1 identical in form, color, texture, proportions, and branding.
+SOURCE OF TRUTH (IMMUTABLE):
+The scraped URL and its associated image(s) are the only truth. Treat them as sacred reference.
+Replicate exactly what appears — identical color, material, proportion, and branding.
+If a side, texture, or logo is not visible, keep it neutral or shaded, never invent or guess.
 
-CAMERA & VISUAL STYLE (NON-NEGOTIABLE):
-• Orbit-based cinematography ONLY: locked 180°/360° rotations, controlled pans, gentle push/pull.
-• NO parallax or depth reconstruction. If a side/angle is not visible in source, do not invent it; keep to visible angles.
-• Minimalist studio context; brand-matched or neutral background.
-• Product is the hero ≥80% visual focus, centered composition.
-• Human presence only if category = Fashion & Apparel, for ≤4 seconds total, faceless/silhouette, and product still dominates the frame.
-• “Bring to life” effects allowed, subtle and premium (no cartoon look): light sweeps, lens glow, floating dust motes, soft wind for fabrics, elegant micro-mist/water droplets where appropriate. Never add props or environments that are not in the source.
-DYNAMIC VIDEO LENGTH:
-• Never assume a fixed number of scenes. Calculate scene_count from total video length: expected_scene_count = video_length / 8 (rounded to integer).
-• For 24s use 3 scenes × 8s; for 32s use 4 scenes × 8s; for 64s use 8 scenes × 8s; etc.
-• Maintain the narrative pattern across any length:
-  1) Intro Rotation (soft reveal, brand/product name only)
-  2) Full 360° Orbit (texture & shape)
-  3) Macro Hero Detail (craftsmanship)
-  4+) Extended (slow-motion pan, logo fade, ambient light transition) — ONLY if assets allow; never invent unseen sides.
-  
-TEXT & LANGUAGE:
-• All text (overlays, captions) must be in Target Language.
-• Overlays must never cover the product. Keep to corners/edges, short (1-3 words), high contrast, and consistent with brand colors.
-• If brand colors are unknown, use neutral white/black with subtle outline/shadow.
-• Use exact product/brand names from PRODUCT_JSON (no paraphrasing).
+REFERENCE LOCK:
+Every frame must visually correspond 1:1 to the scraped product. All decisions, lighting, or angles must maintain this fidelity.
+If any render would alter the product's structure, logo, or form, block execution and return error: "INTEGRITY_BLOCK".
 
-DEMOGRAPHIC LOGIC (SAFETY-ALIGNED):
-• Detect target demographics from PRODUCT_JSON (gender/age if explicitly stated). Output detectedDemographics.
-• CONSISTENCY: If characters are required by the request and the category allows (e.g., Fashion), keep one demographic type across all scenes (men/women/kids/seniors). Use silhouettes or faceless modeling only. In all other categories avoid people; prioritize product-only visuals.
-• If demographic cannot be confidently inferred from PRODUCT_JSON, output targetGender:"neutral" and do NOT include any people.
+STRUCTURED PHASES (NON-MERGEABLE):
+1. PRODUCT_BLOCK (immutable): Fixed product replication. No reinterpretation or retexturing.
+2. SCENE_BLOCK: Defines only camera position, orbit, and motion style (does not affect product identity).
+3. MOOD_BLOCK: Defines atmosphere, color grading, and lighting (applied globally, never on the product itself).
 
-VEO3 VISUAL PROMPT REQUIREMENTS:
-Include: Subject, Context, Action, Style, Camera motion, Composition, Ambiance, plus camera proximity/position, lighting, and simple camera settings (e.g., “24fps, 1/50s, softbox key light”).
+CAMERA CONTROL (LIMITED TO MOTION):
+Orbit-based cinematography only:
+- 360° full orbit, 180° half orbit, or static focus.
+- No parallax, depth reconstruction, or pseudo-3D. Keep camera locked to known product perspectives.
 
-VALIDATION & ANTI-HALLUCINATION:
-• If required fields missing → return ok:false with error:"MISSING_DATA" and list missing.
-• If any instruction would alter product appearance, logo, or create unseen views → reject with error:"INTEGRITY_BLOCK".
-• Sum of scene durations must equal video_length exactly. Never exceed 8 seconds per scene.
+LIGHTING AND STYLE:
+Lighting changes apply to background and atmosphere, not the product pixels.
+Maintain physical light consistency — product reflections must remain identical to the reference.
+Mood settings (romantic, dramatic, etc.) adjust tone of the scene, not product visuals.
+
+VALIDATION:
+If any uncertain or incomplete product data exists, refuse generation and return "MISSING_REFERENCE".
+If the requested motion or mood conflicts with fidelity constraints, prioritize fidelity and return "INTEGRITY_BLOCK".
+
+OUTPUT REQUIREMENTS:
+Include a flattened visual prompt and text overlay prompt (descriptive, no JSON objects).
+Maintain the structure from version 2.4.3 for implementation compatibility.
 
  """
     
@@ -359,7 +353,7 @@ REMINDERS:
                             "scenarioId": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
-                            "thumbnailPrompt": {"type": "string", "description": "<essence, high-contrast, demographic-aligned>"},
+                            "thumbnailPrompt": {"type": "string", "description": "High-contrast thumbnail derived from reference image, visually identical to the product, with subtle lighting variation only in background"},
                             "thumbnailTextOverlayPrompt": {"type": "string", "description": "A short caption (1-3 words) in target language, placed safely (top-right, top-left, bottom-right, etc.), using brand or neutral colors (white/black). Style: bold, elegant, modern, or minimal. Size: small or medium. Must never cover the product."},
                             "detectedDemographics": {
                                 "type": "object",
@@ -381,9 +375,9 @@ REMINDERS:
                                         "description": {"type": "string"},
                                         "duration": {"type": "integer"},
                                         "imagePrompt": {"type": "string"},
-                                        "visualPrompt": {"type": "string"},
+                                        "visualPrompt": {"type": "string", "description":"Cinematic visual prompt combining subject, context, action, style, camera motion, composition, ambiance, lighting, and proximity — orbit-only, no depth reconstruction, product centered ≥80%, strictly identical to reference product visuals."},
                                         "imageReasoning": {"type": "string"},
-                                        "textOverlayPrompt": {"type": "string", "description": "A short caption (1-3 words) in target language, placed safely (top-right, top-left, bottom-right, etc.), using brand or neutral colors (white/black). Style: bold, elegant, modern, or minimal. Size: small or medium. Must never cover the product."}
+                                        "textOverlayPrompt": {"type": "string", "description": "Short overlay caption (1-3 words) in target language, safely positioned (top-right, top-left, etc.), using brand or neutral colors (white/black), bold or elegant style, small or medium size, never covering the product."}
                                     }
                                 }
                             }
