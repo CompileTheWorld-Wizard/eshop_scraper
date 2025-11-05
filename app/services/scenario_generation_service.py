@@ -277,51 +277,39 @@ class ScenarioGenerationService:
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
         return f"""ROLE:
-You are a reconstruction director. Your only mission is to reproduce the exact scraped product — identical in color, proportion, logo, text, and material. 
-No reinterpretation, extrapolation, or paraphrasing permitted.
+You are a reconstruction director. Your only goal is to reproduce the exact product from the scraped reference URL — identical color, logo, text, proportion, and material. 
+No creativity, redesign, or paraphrasing allowed.
 
-HUMAN PRESENCE POLICY (ABSOLUTE ZERO):
-No human figures, parts, or interactions allowed.
-Any human detection, even partial or blurred → "HUMAN_PRESENCE_BLOCK".
-Exception: ≤3 seconds total across full runtime purely for scale reference, never touching or interacting.
+HUMAN PRESENCE POLICY (HARD BLOCK):
+No humans, hands, gestures, or interactions may appear.
+If humans are detected or implied, block generation with "HUMAN_PRESENCE_BLOCK".
+Exception: ≤3 seconds total across the entire video purely for scale or background context, never touching or holding the product.
 
-SOURCE OF TRUTH (IMMUTABLE + HASH VERIFIED):
-The scraped image(s) and URL are the single authoritative source.
-Product fidelity is locked by hash reference. Any mismatch of hash or metadata between render and source → "REFERENCE_MISMATCH_BLOCK".
+SOURCE OF TRUTH (IMMUTABLE):
+The scraped image(s) and URL define absolute ground truth. 
+Logos, typography, and visible texts must appear pixel-accurate (1:1).
+Any mismatch in spelling, font, layout, or alignment = "INTEGRITY_BLOCK".
 
-ZERO-DEVIATION FIDELITY MODE:
-Pixel-level fidelity enforcement:
-- Every rendered frame must match the reference product image within 0.5% pixel variance.
-- If lighting, hue, contrast, or compression artifacts exceed this range → "INTEGRITY_BLOCK".
-- Text, logos, and brand elements must match their original font, kerning, and weight exactly (checksum-verified).
-
-CROSS-FRAME INTEGRITY CHECK:
-All frames across the video must maintain product identity consistency.
-If cumulative drift or distortion occurs between frames → "INTEGRITY_BLOCK".
-
-ENVIRONMENT ISOLATION:
-Background must remain neutral (gradient or soft shadow only).
-No foreign objects, hands, or visual distractions are allowed around or behind the product.
-
-REFERENCE LOCK (unchanged):
-Every frame corresponds 1:1 with scraped product visuals.
-No invention of unseen sides; use neutral shading where unknown.
+REFERENCE LOCK:
+Every frame must visually match the reference product 1:1 in structure and branding.
+Never invent unseen areas — keep neutral shading if a side or detail is not visible.
 
 ALLOWED VARIATIONS:
-Camera orbit only (180°–360°) or static focus.
-Variation limited to orbit angle and light intensity, not shape, texture, or logo.
+Only valid 180°–360° orbit or static shots.
+Variation is limited to camera orbit and lighting intensity, never product features or markings.
 
 STRUCTURED PHASES (UNCHANGED):
-1. PRODUCT_BLOCK — immutable product replication.
+1. PRODUCT_BLOCK — immutable replication.
 2. SCENE_BLOCK — orbit/camera motion only.
-3. MOOD_BLOCK — background tone only.
+3. MOOD_BLOCK — background atmosphere only.
 
 CAMERA CONTROL:
-Orbit-only cinematography (180° or 360°), no pseudo-3D or parallax.
+Orbit-only cinematography (180° or 360°) or static.
+No parallax, pseudo-3D, or reconstruction.
 
 LIGHTING & STYLE:
-Lighting may alter only environment tone.
-Product surface reflections must remain identical to reference.
+Lighting affects only the environment.
+Reflections and highlights on the product must remain identical to the source image.
 
 DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
 - Never assume a fixed number of scenes.
@@ -411,7 +399,7 @@ REMINDERS:
                                         "description": {"type": "string"},
                                         "duration": {"type": "integer"},
                                         "imagePrompt": {"type": "string"},
-                                        "visualPrompt": {"type": "string", "description":"Cinematic orbit-only prompt; product centered ≥90%; zero human presence; background minimal; pixel-level identical to reference product; strict logo/text checksum validation."},
+                                        "visualPrompt": {"type": "string", "description":"Cinematic orbit-only prompt; product centered ≥90%; zero human presence; logos and texts exactly as reference; identical structure and color fidelity."},
                                         "imageReasoning": {"type": "string"},
                                         "textOverlayPrompt": {"type": "string", "description": "1–3-word caption in target language; positioned safely; neutral or brand colors; never cover or modify logos/text."}
                                     }
