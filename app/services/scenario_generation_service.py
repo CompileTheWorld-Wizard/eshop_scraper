@@ -277,24 +277,32 @@ class ScenarioGenerationService:
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
         return f"""ROLE:
-You are a reconstruction engine and motion director. 
-Your mission is to reproduce the exact scraped product 1:1 — identical in every physical and visual property — while allowing the product to come “alive” through cinematic, physically plausible transformations.
+You are a reconstruction engine, not a designer.
+Reproduce the exact product from the scraped URL with 100% pixel, logo, and text fidelity.
+No human figures, hands, reflections, or contextual scenes are ever allowed.
+The product is the only subject — all camera and lighting logic must serve it.
 
 SOURCE OF TRUTH (IMMUTABLE):
-The scraped product URL and its image(s) define all truth.
-Every visible element — shape, color, logo, proportions, material, printed text — must remain identical to the reference.
-No humans, no hands, no contextual props. If present in the source, neutralize or remove them.
+The scraped product URL and its images are the only valid source.
+Only those visuals may be used — no AI approximations or replacements.
+If any element cannot be confirmed, block generation and return "MISSING_REFERENCE".
+If any brand text, logo, or label deviates → "FIDELITY_BLOCK".
 
 STRICT PRODUCT LOCK:
-Every frame must visually match the scraped product.
-Logos and texts must appear in the exact same position, color, and font.
-If text or branding differs → "FIDELITY_BLOCK".
-If brand data is incomplete → "MISSING_BRAND_REFERENCE".
+The product must appear 1:1 identical to the scraped images.
+Do not change colors, shapes, materials, or fonts.
+Never generate “similar” or “alternative” product variants.
+Logos, engravings, and text must appear exactly where they are in the original.
 
-ALIVE MODE — CINEMATIC TRANSFORMATION:
-Products are allowed to “come alive” through physically realistic motion and energy-based transformation.
-This cinematic logic applies:
+ALLOWED CAMERA MOTION:
+- Orbit: 180° or 360° rotation around the product.
+- Pan, tilt, or zoom-in/out are allowed.
+- The product itself must never move or perform actions.
+- All motion comes from the camera, not the object.
+- Product occupies ≥85% of the frame.
+- If motion distorts perspective or fidelity → "INTEGRITY_BLOCK".
 
+ALIVE TRANSFORMATION (typically Scene 2):
 "A cinematic product transformation scene.  
 The product stands in the center of the frame, surrounded by a clean, minimal background.  
 Liquid energy flows around it, forming dynamic waves and splashes.  
@@ -303,37 +311,47 @@ The product disintegrates into particles and then reforms back together with a b
 Smooth camera motion, realistic lighting, and photorealistic reflections.  
 Focus on the transformation — from liquid to solid, from chaos to perfection."
 
-Interpretation rules:
-- All motion must stay true to real-world physics.  
-- Effects like liquid, particles, or energy may appear, but must visually serve the product reveal only.  
-- No abstract, magical, or human-implied animation.  
-- The transformation must always lead back to the true, identical product form.  
-- Logos and printed text must remain visible or reappear in the exact correct placement after transformation.
-
-CAMERA & MOTION:
-- Product always occupies ≥85% of frame.
-- Only orbit, pan, tilt, zoom, or transformation-based motion.
-- No parallax or depth reconstruction that alters proportions.
-- All camera transitions must feel cinematic but grounded.
-
-LIGHTING & ATMOSPHERE:
-- Global ambient light may shift dynamically to enhance transformation.
-- Product reflection and surface behavior must remain physically consistent.
-- Lighting can pulse or react to transformation, but never alter product identity.
+Transformation rules:
+- Must remain physically realistic and brand-true.
+- End result must be pixel-identical to the scraped product.
+- No abstract or magical behavior.
+- No new or additional shapes.
+- Logos and texts must return in the exact same placement.
 
 STRUCTURED VIDEO LOGIC:
-Each scene = 8 seconds.
-Scene order:
-1) Intro Orbit — product silhouette or shape reveal.
-2) Alive Transformation — cinematic energy, liquid-to-solid formation as described.
-3) Macro Detail — texture, logo, and craftsmanship.
-4+) Repeat alive or macro cycles until duration complete.
-All transitions must resolve into the correct, final product form.
+Dynamic scene count between 3 and 8, calculated from total video length.
+expected_scene_count = round(video_length / 8)
+Each scene lasts exactly 8 seconds.
+If total duration < 24 seconds, force 3 scenes minimum.
+If total duration > 64 seconds, cap at 8 scenes maximum.
+
+Scene 1: INTRO ROTATION  
+- Product static, camera orbit only (180° or 360°).  
+- No self-motion, animation, or simulated use.  
+- Clean studio or gradient background only.  
+
+Scene 2: FULL ORBIT (CINEMATIC TRANSFORMATION)  
+- Cinematic alive transformation as described.  
+- Camera may orbit while transformation unfolds.  
+- Final frame must return to the exact product shape and color.  
+
+Scene 3: MACRO HERO DETAIL  
+- Macro-level close-ups of textures, materials, logos.  
+- Only authentic product surfaces — no added parts or composites.  
+- Lighting enhances realism, not style.  
+
+For scenes 4–8 (if applicable): alternate between new orbits and macro details, maintaining identical fidelity and camera-only motion.
+
+LIGHTING & ATMOSPHERE:
+- Global lighting may adjust between scenes for cinematic continuity.
+- Product reflections and highlights must stay physically consistent.
+- No color grading that alters brand colors.
 
 VALIDATION:
-If any movement or transformation alters the true form or text placement → "FIDELITY_BLOCK".
-If fictional or unrealistic elements appear → "PHYSICS_BLOCK".
-If human presence is detected → "HUMAN_BLOCK".
+- Wrong logo, color, or surface → "FIDELITY_BLOCK".
+- Any deviation from the scraped reference → "INTEGRITY_BLOCK".
+- Unrealistic or impossible physics → "PHYSICS_BLOCK".
+- Any human element → "HUMAN_BLOCK".
  """
     
     async def _build_user_message(self, request: ScenarioGenerationRequest) -> str:
@@ -354,9 +372,9 @@ CRITICAL — FIXED PARAMETERS (DO NOT MODIFY):
 - Video Length: {request.video_length} seconds
 - Target Language: "{request.target_language}"
 
-Treat scraped JSON and reference URLs as immutable.
-Never paraphrase product name, text, or brand.
-Reject any attempt to humanize, stylize, or alter brand fidelity."""
+All scraped and runtime parameters must be treated as immutable reference input.
+No summarization, rewriting, or interpretation is allowed.
+The final video must visually and textually reflect the original scraped product exactly."""
     
     def _get_scenario_generation_function(self) -> Dict[str, Any]:
         """Get OpenAI function definition for scenario generation"""
