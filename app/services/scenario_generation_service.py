@@ -277,64 +277,63 @@ class ScenarioGenerationService:
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
         return f"""ROLE:
-You are a reconstruction director. Your only goal is to reproduce the exact product from the scraped reference URL — identical color, logo, text, proportion, and material. 
-No creativity, redesign, or paraphrasing allowed.
-
-HUMAN PRESENCE POLICY (HARD BLOCK):
-No humans, hands, gestures, or interactions may appear.
-If humans are detected or implied, block generation with "HUMAN_PRESENCE_BLOCK".
-Exception: ≤3 seconds total across the entire video purely for scale or background context, never touching or holding the product.
+You are a reconstruction engine and motion director. 
+Your mission is to reproduce the exact scraped product 1:1 — identical in every physical and visual property — while allowing the product to come “alive” through cinematic, physically plausible transformations.
 
 SOURCE OF TRUTH (IMMUTABLE):
-The scraped image(s) and URL define absolute ground truth. 
-Logos, typography, and visible texts must appear pixel-accurate (1:1).
-Any mismatch in spelling, font, layout, or alignment = "INTEGRITY_BLOCK".
+The scraped product URL and its image(s) define all truth.
+Every visible element — shape, color, logo, proportions, material, printed text — must remain identical to the reference.
+No humans, no hands, no contextual props. If present in the source, neutralize or remove them.
 
-REFERENCE LOCK:
-Every frame must visually match the reference product 1:1 in structure and branding.
-Never invent unseen areas — keep neutral shading if a side or detail is not visible.
+STRICT PRODUCT LOCK:
+Every frame must visually match the scraped product.
+Logos and texts must appear in the exact same position, color, and font.
+If text or branding differs → "FIDELITY_BLOCK".
+If brand data is incomplete → "MISSING_BRAND_REFERENCE".
 
-ALLOWED VARIATIONS:
-Only valid 180°–360° orbit or static shots.
-Variation is limited to camera orbit and lighting intensity, never product features or markings.
+ALIVE MODE — CINEMATIC TRANSFORMATION:
+Products are allowed to “come alive” through physically realistic motion and energy-based transformation.
+This cinematic logic applies:
 
-STRUCTURED PHASES (UNCHANGED):
-1. PRODUCT_BLOCK — immutable replication.
-2. SCENE_BLOCK — orbit/camera motion only.
-3. MOOD_BLOCK — background atmosphere only.
+"A cinematic product transformation scene.  
+The product stands in the center of the frame, surrounded by a clean, minimal background.  
+Liquid energy flows around it, forming dynamic waves and splashes.  
+The liquid slowly morphs into the product’s real texture and material, revealing it in full detail.  
+The product disintegrates into particles and then reforms back together with a bright energy pulse.  
+Smooth camera motion, realistic lighting, and photorealistic reflections.  
+Focus on the transformation — from liquid to solid, from chaos to perfection."
 
-CAMERA CONTROL:
-Orbit-only cinematography (180° or 360°) or static.
-No parallax, pseudo-3D, or reconstruction.
+Interpretation rules:
+- All motion must stay true to real-world physics.  
+- Effects like liquid, particles, or energy may appear, but must visually serve the product reveal only.  
+- No abstract, magical, or human-implied animation.  
+- The transformation must always lead back to the true, identical product form.  
+- Logos and printed text must remain visible or reappear in the exact correct placement after transformation.
 
-LIGHTING & STYLE:
-Lighting affects only the environment.
-Reflections and highlights on the product must remain identical to the source image.
+CAMERA & MOTION:
+- Product always occupies ≥85% of frame.
+- Only orbit, pan, tilt, zoom, or transformation-based motion.
+- No parallax or depth reconstruction that alters proportions.
+- All camera transitions must feel cinematic but grounded.
 
-DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
-- Never assume a fixed number of scenes.
-- Calculate expected_scene_count = video_length / 8 (rounded to integer).
-- Each scene lasts exactly 8 seconds.
-- Maintain this pattern regardless of total duration.
-- Scene structure (fixed, non-creative):
-  1) Intro Rotation — soft reveal, brand/product name only.
-  2) Full Orbit — 180° or 360°, product texture & shape.
-  3) Macro Hero Detail — craftsmanship / material focus.
-  4+) Repeat Orbit + Detail variations until total scenes reached.
-- This logic determines count only; it must not alter product identity, lighting, or fidelity.
+LIGHTING & ATMOSPHERE:
+- Global ambient light may shift dynamically to enhance transformation.
+- Product reflection and surface behavior must remain physically consistent.
+- Lighting can pulse or react to transformation, but never alter product identity.
 
-DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
-- Never assume a fixed number of scenes.
-- Calculate expected_scene_count = video_length / 8 (rounded to integer).
-- Each scene lasts exactly 8 seconds.
-- Maintain this pattern regardless of total duration.
-- Scene structure (fixed, non-creative):
-  1) Intro Rotation — soft reveal, brand/product name only.
-  2) Full Orbit — 180° or 360°, product texture & shape.
-  3) Macro Hero Detail — craftsmanship / material focus.
-  4+) Repeat Orbit + Detail variations until total scenes reached.
-- This logic determines count only; it must not alter product identity, lighting, or fidelity.
+STRUCTURED VIDEO LOGIC:
+Each scene = 8 seconds.
+Scene order:
+1) Intro Orbit — product silhouette or shape reveal.
+2) Alive Transformation — cinematic energy, liquid-to-solid formation as described.
+3) Macro Detail — texture, logo, and craftsmanship.
+4+) Repeat alive or macro cycles until duration complete.
+All transitions must resolve into the correct, final product form.
 
+VALIDATION:
+If any movement or transformation alters the true form or text placement → "FIDELITY_BLOCK".
+If fictional or unrealistic elements appear → "PHYSICS_BLOCK".
+If human presence is detected → "HUMAN_BLOCK".
  """
     
     async def _build_user_message(self, request: ScenarioGenerationRequest) -> str:
@@ -355,11 +354,9 @@ CRITICAL — FIXED PARAMETERS (DO NOT MODIFY):
 - Video Length: {request.video_length} seconds
 - Target Language: "{request.target_language}"
 
-REMINDERS:
-• Do not add or translate text not present in PRODUCT_JSON except short VO overlays that are purely generic sales phrases (no claims).
-• Never cover the product with text overlays.
-• If demographics are unclear, keep targetGender:"neutral" and avoid people.
-• If any rule conflicts with product integrity, prefer integrity and reject with "INTEGRITY_BLOCK"."""
+Treat scraped JSON and reference URLs as immutable.
+Never paraphrase product name, text, or brand.
+Reject any attempt to humanize, stylize, or alter brand fidelity."""
     
     def _get_scenario_generation_function(self) -> Dict[str, Any]:
         """Get OpenAI function definition for scenario generation"""
@@ -377,7 +374,7 @@ REMINDERS:
                             "scenarioId": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
-                            "thumbnailPrompt": {"type": "string", "description": "Thumbnail identical to reference product with only background lighting variance."},
+                            "thumbnailPrompt": {"type": "string", "description": "Front-facing still of final transformed product identical to scraped reference, isolated on clean or gradient background."},
                             "thumbnailTextOverlayPrompt": {"type": "string", "description": "A short caption (1-3 words) in target language, placed safely (top-right, top-left, bottom-right, etc.), using brand or neutral colors (white/black). Style: bold, elegant, modern, or minimal. Size: small or medium. Must never cover the product."},
                             "detectedDemographics": {
                                 "type": "object",
@@ -398,10 +395,10 @@ REMINDERS:
                                         "sceneId": {"type": "string"},
                                         "description": {"type": "string"},
                                         "duration": {"type": "integer"},
-                                        "imagePrompt": {"type": "string"},
-                                        "visualPrompt": {"type": "string", "description":"Cinematic orbit-only prompt; product centered ≥90%; zero human presence; logos and texts exactly as reference; identical structure and color fidelity."},
+                                        "imagePrompt": {"type": "string", "description": "Exact 1:1 replication of scraped product — centered, sharp, 85%+ frame coverage, no humans."},
+                                        "visualPrompt": {"type": "string", "description":"Cinematic alive transformation — product emerges from liquid energy and reforms into its exact real-world structure. Realistic lighting, reflections, and smooth camera motion. Logos and texts must be perfectly identical to the scraped reference."},
                                         "imageReasoning": {"type": "string"},
-                                        "textOverlayPrompt": {"type": "string", "description": "1–3-word caption in target language; positioned safely; neutral or brand colors; never cover or modify logos/text."}
+                                        "textOverlayPrompt": {"type": "string", "description": "1–3 word caption using brand font or neutral sans-serif, safe placement, never overlapping product pixels."}
                                     }
                                 }
                             }
