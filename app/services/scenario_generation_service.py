@@ -277,37 +277,42 @@ class ScenarioGenerationService:
         environment_context = f"- Environment: \"{request.environment}\"" if request.environment else ""
 
         return f"""ROLE:
-You are a reconstruction director, not a designer. Your single purpose is to reproduce the exact product shown in the scraped reference URL without alteration, reinterpretation, or redesign.
+You are a reconstruction director. Your only goal is to reproduce the exact product from the scraped reference URL — identical color, logo, text, proportion, and material. 
+No creativity, redesign, or paraphrasing allowed.
+
+HUMAN PRESENCE POLICY (HARD BLOCK):
+No humans, hands, gestures, or interactions may appear.
+If humans are detected or implied, block generation with "HUMAN_PRESENCE_BLOCK".
+Exception: ≤3 seconds total across the entire video purely for scale or background context, never touching or holding the product.
 
 SOURCE OF TRUTH (IMMUTABLE):
-The scraped URL and its associated image(s) are the only truth. Treat them as sacred reference.
-Replicate exactly what appears — identical color, material, proportion, and branding.
-If a side, texture, or logo is not visible, keep it neutral or shaded, never invent or guess.
+The scraped image(s) and URL define absolute ground truth. 
+Logos, typography, and visible texts must appear pixel-accurate (1:1).
+Any mismatch in spelling, font, layout, or alignment = "INTEGRITY_BLOCK".
 
 REFERENCE LOCK:
-Every frame must visually correspond 1:1 to the scraped product. All decisions, lighting, or angles must maintain this fidelity.
-If any render would alter the product’s structure, logo, or form, block execution and return error: "INTEGRITY_BLOCK".
+Every frame must visually match the reference product 1:1 in structure and branding.
+Never invent unseen areas — keep neutral shading if a side or detail is not visible.
 
 ALLOWED VARIATIONS:
-Multiple scenes are permitted if they display the same product from valid 180° or 360° orbit perspectives.
-Minor changes in camera position, focus, zoom, or lighting intensity are allowed.
-Scene diversity must come exclusively from camera motion and angle, never from product variation.
-No modifications to shape, color, branding, or material are permitted.
+Only valid 180°–360° orbit or static shots.
+Variation is limited to camera orbit and lighting intensity, never product features or markings.
 
-STRUCTURED PHASES (NON-MERGEABLE):
-1. PRODUCT_BLOCK (immutable): Fixed product replication. No reinterpretation or retexturing.
-2. SCENE_BLOCK: Defines only camera position, orbit, and motion style (does not affect product identity).
-3. MOOD_BLOCK: Defines atmosphere, color grading, and lighting (applied globally, never on the product itself).
+STRUCTURED PHASES (UNCHANGED):
+1. PRODUCT_BLOCK — immutable replication.
+2. SCENE_BLOCK — orbit/camera motion only.
+3. MOOD_BLOCK — background atmosphere only.
 
-CAMERA CONTROL (LIMITED TO MOTION):
-Orbit-based cinematography only:
-- 360° full orbit, 180° half orbit, or static focus.
-- No parallax, depth reconstruction, or pseudo-3D. Keep camera locked to known product perspectives.
+CAMERA CONTROL:
+Orbit-only cinematography (180° or 360°) or static.
+No parallax, pseudo-3D, or reconstruction.
 
-LIGHTING AND STYLE:
-Lighting changes apply to background and atmosphere, not the product pixels.
-Maintain physical light consistency — product reflections must remain identical to the reference.
-Mood settings (romantic, dramatic, etc.) adjust tone of the scene, not product visuals.
+LIGHTING & STYLE:
+Lighting affects only the environment.
+Reflections and highlights on the product must remain identical to the source image.
+
+VIDEO LENGTH LOGIC:
+Keep v2.4.6 pattern: 8 s scenes, calculated by video_length / 8, repeating orbit + macro detail cycles.
 
 DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
 - Never assume a fixed number of scenes.
@@ -320,14 +325,6 @@ DYNAMIC VIDEO LENGTH (TECHNICAL LOGIC):
   3) Macro Hero Detail — craftsmanship / material focus.
   4+) Repeat Orbit + Detail variations until total scenes reached.
 - This logic determines count only; it must not alter product identity, lighting, or fidelity.
-
-VALIDATION:
-If any uncertain or incomplete product data exists, refuse generation and return "MISSING_REFERENCE".
-If the requested motion or mood conflicts with fidelity constraints, prioritize fidelity and return "INTEGRITY_BLOCK".
-
-OUTPUT REQUIREMENTS:
-Include a flattened visual prompt and text overlay prompt (descriptive, no JSON objects).
-Maintain the structure from version 2.4.3 for implementation compatibility.
 
  """
     
@@ -371,7 +368,7 @@ REMINDERS:
                             "scenarioId": {"type": "string"},
                             "title": {"type": "string"},
                             "description": {"type": "string"},
-                            "thumbnailPrompt": {"type": "string", "description": "High-contrast thumbnail derived from reference image, visually identical to the product, with subtle lighting variation only in background"},
+                            "thumbnailPrompt": {"type": "string", "description": "Thumbnail identical to reference product with only background lighting variance."},
                             "thumbnailTextOverlayPrompt": {"type": "string", "description": "A short caption (1-3 words) in target language, placed safely (top-right, top-left, bottom-right, etc.), using brand or neutral colors (white/black). Style: bold, elegant, modern, or minimal. Size: small or medium. Must never cover the product."},
                             "detectedDemographics": {
                                 "type": "object",
@@ -393,9 +390,9 @@ REMINDERS:
                                         "description": {"type": "string"},
                                         "duration": {"type": "integer"},
                                         "imagePrompt": {"type": "string"},
-                                        "visualPrompt": {"type": "string", "description":"Cinematic visual prompt combining subject, context, action, style, camera motion, composition, ambiance, lighting, and proximity — orbit-only, no depth reconstruction, product centered ≥80%, strictly identical to reference product visuals."},
+                                        "visualPrompt": {"type": "string", "description":"Cinematic orbit-only prompt; product centered ≥90%; zero human presence; logos and texts exactly as reference; identical structure and color fidelity."},
                                         "imageReasoning": {"type": "string"},
-                                        "textOverlayPrompt": {"type": "string", "description": "Short overlay caption (1-3 words) in target language, safely positioned (top-right, top-left, etc.), using brand or neutral colors (white/black), bold or elegant style, small or medium size, never covering the product."}
+                                        "textOverlayPrompt": {"type": "string", "description": "1–3-word caption in target language; positioned safely; neutral or brand colors; never cover or modify logos/text."}
                                     }
                                 }
                             }
