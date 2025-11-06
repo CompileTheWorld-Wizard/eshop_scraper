@@ -287,37 +287,61 @@ SOURCE OF TRUTH (IMMUTABLE)
 - If uncertainty exists about any portion → mark the scene with "MISSING_REFERENCE" but still produce valid scenes using only safe views.
 - Brand text and logos must match spelling, order, size, color and placement 1:1.
 
+SIDE-LOCK (FRONT / LEFT / RIGHT / TOP / BOTTOM)
+- Use only what is visible in the scraped photos for each side.
+- FRONT: show only what is visible as front in the sources; no extrapolation beyond that silhouette.
+- LEFT/RIGHT: show a side only if an explicit source photo exists for that side; never guess missing details.
+- TOP/BOTTOM: render only if a clear source photo exists; otherwise do not show.
+- NO DEFORMATION: do not warp, stretch, perspective-correct or “enhance” in ways that alter letters, logos, seams or edges.
+- NO EXTRAPOLATION: missing = not shown.
+- END-FRAME MATCH: the final frame of any scene must faithfully coincide with a concrete source photo of the same side.
+
 STRICT PRODUCT LOCK
 - The product remains physically static. Only the camera moves (orbit, pan, tilt, zoom) or we cut between real scraped angles.
 - No inpainting, no generative reconstruction, no new geometry, no new logos/text, no back-side guesses.
-- End frames must be pixel-faithful to one of the scraped images.
+- Side-lock is mandatory: any shown side must 1:1 correspond to an existing source photo of that side.
+- When product text or logos are visible: **do not inject any Scene Description**. Leave `scene_description` empty; pass only safe motion controls or cuts between real photos.
 
-ALIVE STYLE (AROUND, NOT BY THE PRODUCT)
+ALIVE STYLE (AROUND, NOT ON THE PRODUCT)
 - Cinematic energy, light, particles, liquids may move around the product.
 - These effects may not repaint, recolor or restyle any branding or text.
-- Final frame of each scene must visually coincide with the real product image.
+- Final frame of each scene must visually coincide with the real product image of the shown side.
 
-MULTI‑SOURCE & MISSING‑VIEW LOGIC  (NEW)
-- You are allowed to use every scraped photo from the product URL.
+MULTI-SOURCE & MISSING-VIEW LOGIC
+- DEFAULT MULTI-SOURCE: when ≥2 distinct scraped photos exist, you must use them via safe cuts or cross-fades only. Never synthesize in-between views.
+- COVERAGE RULE: determine visible coverage from sources. Use only the sides and angles that have real photographic evidence.
 - If some sides are missing (e.g., watch backplate not shown), do not attempt to show them.
-- Build scenes from safe operations only: crops, macro‑details, controlled orbit within visible tolerance, Ken‑Burns push/pan, and cuts between existing photos.
-- Do not block generation solely because some angles are missing; instead, produce scenes from what is available.
+- Do not fail generation solely because angles are missing; produce scenes from what is available.
 
-SCENE GENERATION GUARANTEE  (NEW)
+SCENE GENERATION GUARANTEE
 - Always generate ≥3 scenes even if only one photo is available.
-- When limited to 1 photo, vary by: macro crop, push‑in, lateral pan, subtle parallax from the same image, and text/graphic overlays that never occlude branding.
-- If more photos exist, you may cross‑fade/cut between them. Never synthesize in‑between views.
+- With 1 photo: vary by macro crop, push-in, lateral pan, subtle parallax from the same image; optional minimal text overlays that never occlude branding.
+- With ≥2 photos: at least one scene must cut/cross-fade between real photos (multi-source).
 
 CAMERA & MOTION RULES
-- Allowed: orbit (≤180° unless multiple real angles exist), pan, tilt, zoom, cross‑fades between scraped angles, Ken‑Burns.
-- Forbidden: any motion that reveals unseen product surfaces; any warping of logos/text; any human presence or reflection.
+- Allowed:
+  • If coverage < 270° from sources: orbit up to 120–180° within the visible envelope; pan, tilt, zoom; safe cuts/cross-fades; Ken-Burns.
+  • If coverage ≥ 270° from distinct real photos: a 360° orbit is allowed by stitching through those real angles with cuts/cross-fades only. No generative in-betweens.
+- Forbidden: any motion that reveals unseen product surfaces; any warp that alters logos/text; any human presence or reflection.
 
-VALIDATION & BLOCKS
+DECISION TREE FOR ORBIT
+- If num_photos == 1 → clamp orbit ≤ 120–180°; use crops/pan/zoom only.
+- If num_photos ≥ 2 and combined distinct sides cover < 270° → clamp orbit ≤ 120–180°; cuts between real photos allowed.
+- If num_photos ≥ 3 and combined distinct sides cover ≥ 270° → 360° allowed with cuts across the real angles; no synthesized in-betweens.
+
+VALIDATION & BLOCKS (with hard thresholds)
 - Wrong logo/text/color/placement → "FIDELITY_BLOCK".
 - Attempt to render unseen surfaces → "INTEGRITY_BLOCK".
 - Any physical product motion → "PHYSICS_BLOCK".
-- Human or human‑like presence → "HUMAN_BLOCK".
+- Human or human-like presence → "HUMAN_BLOCK".
+- Side without matching source photo → "SIDE_BLOCK".
+- Geometry/typography deformation vs source → "DEFORMATION_BLOCK" when:
+  • OCR Levenshtein distance != 0 on the logo/text ROI, or
+  • SSIM on the logo/text ROI < 0.98 against the source ROI.
 
+SELF-CHECK (INFERENCE GUARD)
+- Before finalizing each scene, verify that the shown side ∈ {"FRONT", "LEFT", "RIGHT", "TOP", "BOTTOM"} has a matching source photo.
+- If not, do not render that side; switch to crop/macro/zoom on an available side.
 
  """
     
