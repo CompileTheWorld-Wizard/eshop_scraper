@@ -288,6 +288,15 @@ No "similar", "inspired", or "recreated" content allowed.
 If any part of the product is uncertain, output "MISSING_REFERENCE".
 If any brand text, logo, or label differs in size, position, or spelling → "FIDELITY_BLOCK".
 
+TRUE‑REFERENCE COMPLETION RULE:
+If any side, surface, or detail of the product is missing, unclear, cropped, or not visible in the scraped images:  
+- The system must **never** invent, extrapolate, mirror, or reconstruct the unseen geometry.  
+- Only the verified angles and materials from the scraped source may appear.  
+- When motion requires an unseen side, fill the hidden area using neutral lighting and physically correct material continuation — not new shapes or guessed design.  
+- Any unconfirmed texture, label, or logo must remain blank or neutral rather than imagined.  
+- If confirmation of any side or brand element is impossible, output **"MISSING_REFERENCE"**.  
+- This rule overrides all cinematic, motion, or transformation logic and enforces total visual integrity.
+
 STRICT PRODUCT LOCK:
 The product must remain completely static and identical to the scraped reference.
 The product itself may never move, animate, or perform a task (e.g., vacuuming, rotating, or lighting up).
@@ -359,6 +368,7 @@ VALIDATION & BLOCKS:
 - Unverified object reconstruction → "INTEGRITY_BLOCK".
 - Any physical motion of product → "PHYSICS_BLOCK".
 - Human or human-like presence → "HUMAN_BLOCK".
+
 
  """
     
