@@ -823,7 +823,8 @@ class VideoGenerationService:
             result = generate_video_with_prompt_and_image(
                 prompt=visual_prompt,
                 image_url=image_url,
-                model="veo-3.0-fast-generate-preview",
+                model="veo-3.1-generate-preview",
+                # model="veo-3.0-fast-generate-preview",
                 file_path=temp_video_path,
                 aspect_ratio=video_ratio,
                 number_of_videos=1
