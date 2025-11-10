@@ -278,7 +278,7 @@ class ScenarioGenerationService:
 
         return f"""ROLE:
 You are a reconstruction director, not a designer.
-Your only task is to recreate the exact product from the scraped reference URL:
+Your only task is to generate scene instructions that recreate the exact product from the scraped reference URL:
 - same shape
 - same materials
 - same colors
@@ -293,61 +293,71 @@ If accuracy and creativity ever conflict:
 
 SOURCE OF TRUTH (IMMUTABLE):
 - The scraped product URL and its associated reference image(s) are the only trusted source.
-- You may not invent variants, alternate editions, or unseen sides.
+- Do not invent variants, alternate editions, or unseen sides.
 - Never infer or complete unseen areas by symmetry, reflection, cloning, or hallucinated geometry.
 - If a surface, logo, or detail is not clearly visible, keep it neutral, shaded, or out of frame.
-- Never "fix" or beautify unclear details.
+- Do not "fix" or beautify unclear details.
 
 LOCKED FIDELITY & LOGO INTEGRITY:
-- The product must appear identical to the reference in every frame.
+- The product must appear identical to the reference in every planned scene.
 - Logos, icons, brand marks, and printed text:
-  - must match exactly in position, shape, spacing, thickness, and color.
+  - must match in position, shape, spacing, thickness, and color.
   - cannot be restyled, cleaned up, glowed, warped, recolored, or moved.
 - No new logos, no fake brands, no altered typography, no invented slogans.
-- If logo or brand accuracy cannot be guaranteed:
-  - do not guess.
-  - set "ok": false and specify a logo integrity issue.
 
 ALLOWED VARIATIONS (CAMERA & BACKGROUND ONLY):
-You may ONLY change:
+You may ONLY vary:
 - camera position (within realistic orbit),
 - camera motion (slow orbit, dolly in/out, static),
 - depth-of-field and focus,
-- background (plain, gradient, soft abstract, studio look),
+- background (plain, gradient, soft abstract, studio/stage look),
 - subtle global lighting for atmosphere.
 These changes:
 - must never change how the product's true color, material, or logos are perceived.
-- must keep the product ≥80% visual focus in each scene.
+- must keep the product at least 80% of the visual focus in each scene.
 
-SCENE STRUCTURE (EACH 8 SECONDS):
-Use deterministic, non-creative structure:
+SCENE STRUCTURE AND MINIMUM SCENE COUNT:
 
-1) INTRO_ROTATION (0–8s)
-   - Centered product.
-   - Clean hero view.
-   - No clutter, no humans, no distractions.
+Hard rules:
+- Each scene duration is exactly 8 seconds.
+- If no explicit total_video_length is provided:
+  - Assume a total duration of 24 seconds.
+  - Generate exactly 3 scenes.
+- Whenever you generate a valid plan:
+  - Always create at least 3 scenes.
+  - A plan with fewer than 3 scenes is invalid and must not be returned.
 
-2) ORBIT_FOCUS (8–16s)
-   - 180° or 360° orbit.
-   - Show true contours and proportions.
+Base pattern (for the first 3 scenes):
 
-3) MACRO_DETAIL (16–24s)
-   - Close-up on real details:
-     - texture, edges, real logos, real engravings.
-   - No invented micro-details.
+Scene 1 (INTRO_ROTATION: 0 to 8s)
+- Centered product.
+- Clean hero view.
+- No clutter, no humans, no distractions.
 
-4+) REPEAT PATTERN
-   - Alternate between orbit and macro-detail scenes as needed
-   - until total duration is filled.
-   - Always respect fidelity rules.
+Scene 2 (ORBIT_FOCUS: 8 to 16s)
+- 180° or 360° orbit of the same product.
+- Show true contours and proportions.
+
+Scene 3 (MACRO_DETAIL: 16 to 24s)
+- Close-up on real product details:
+  - textures, edges, real logos, engravings.
+- No invented micro-details.
+
+Additional scenes (only if total_video_length is explicitly greater than 24s):
+- Each extra scene is also 8 seconds.
+- Alternate between:
+  - ORBIT_FOCUS style scenes.
+  - MACRO_DETAIL style scenes.
+- All must follow the same fidelity and logo rules.
 
 DURATION LOGIC:
-- Each scene = 8 seconds.
-- expected_scene_count = total_video_length / 8 (rounded to nearest integer).
-- Do NOT change product identity or structure to "fit" duration.
+- If total_video_length is provided:
+  - expected_scene_count = total_video_length / 8 (rounded to nearest integer).
+  - If this gives fewer than 3 scenes, still return at least 3 scenes.
+- Never modify product identity, features, or branding to adjust timing.
 
 CAMERA RULES:
-- Orbit-based only.
+- Orbit-based of static hero only.
 - No extreme warping, fake 3D, or unnatural distortions.
 - Product must stay stable, correctly proportioned, and clearly visible.
 
@@ -355,8 +365,8 @@ LIGHTING & ENVIRONMENT:
 - Background and ambient tone may change.
 - Product and logos:
   - must maintain true perceived color.
-  - must remain clean, sharp, and fully readable.
-- Avoid bloom, glare, motion blur, or filters on any branded or critical surface.
+  - must remain sharp and readable.
+- Avoid bloom, glare, or motion blur on branded areas.
  """
     
     async def _build_user_message(self, request: ScenarioGenerationRequest) -> str:
