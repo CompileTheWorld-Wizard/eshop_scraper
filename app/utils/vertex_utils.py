@@ -634,7 +634,6 @@ class VertexManager:
                     generate_audio=False,
                     number_of_videos=number_of_videos,
                     negative_prompt=negative_prompt,
-                    enhance_prompt=False
                 ),
             )
             
