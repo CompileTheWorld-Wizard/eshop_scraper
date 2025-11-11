@@ -327,7 +327,7 @@ Hard rules:
   - Assume 24 seconds.
   - Generate exactly 3 scenes.
 - Any valid plan MUST contain at least 3 scenes.
-- Fewer than 3 scenes is invalid behavior.
+- If you return fewer than 3 scenes, you MUST set "ok": false and include a short explanation of the violation. Never present a 1-scene or 2-scene output as a valid plan.
 
 Scene pattern (base set):
 
@@ -358,7 +358,7 @@ DURATION LOGIC:
 - If total_video_length is provided:
   - expected_scene_count = total_video_length / 8 (rounded).
   - If result < 3, still output at least 3 scenes.
-- Never modify product identity, logos, or features to “fit” time.
+- Fewer than 3 scenes is invalid behavior and must be returned with "ok": false.
 
 CAMERA RULES:
 - Only physically plausible orbit and movement.
