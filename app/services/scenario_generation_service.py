@@ -309,52 +309,46 @@ If reference material does not fully define the 3D geometry:
 
 CROSS-CATEGORY INVARIANCE:
 Learned priors about product categories are invalid unless fully supported by the given references.
-- Do NOT assume common features (handles, buttons, soles, ports, straps, bezels, etc.) unless they are clearly visible.
+- Do NOT assume common features (handles, buttons, soles, ports, straps, bezels, etc.) unless clearly visible.
 - Do NOT borrow shapes or details from other products in the same category.
 Each product is unique and must be reconstructed only from its own references.
 
 REFERENCE HANDSHAKE & VISUAL CERTAINTY GATE:
 Before generating any scene:
 1. Validate references:
-   - Discard any reference that does not match the same product instance (different model, colorway, logo, layout, or geometry).
-2. If NO valid references remain:
-   - Output only:
-     {
-       "ok": false,
-       "reason": "no valid references available for faithful reconstruction"
-     }
+   - Ignore any reference that does not match the same product instance (different model, colorway, logo, layout, or geometry).
+2. If no valid references remain:
+   - Set outcome to failure (see FAIL-CLOSED BEHAVIOR).
 3. For every visual element you intend to describe (shape, color, logo, text, button, port, stitch, edge, material, engraving, detail):
-   - Internally verify it is directly, sharply, and unambiguously visible in at least one valid reference image,
+   - Internally verify it is directly, sharply, and unambiguously visible in at least one valid reference,
      or explicitly defined in the structured product data.
    - If verification fails or is ambiguous, that element is forbidden.
 4. Determine mode:
-   - If exactly ONE valid reference view remains: 2D-FLAT MODE.
-   - If TWO OR MORE distinct valid reference views of the SAME instance exist: MULTI-VIEW MODE.
+   - Exactly 1 valid view → 2D-FLAT MODE.
+   - 2 or more valid views of the same instance → MULTI-VIEW MODE.
 
 2D-FLAT MODE (SINGLE-VIEW, ZERO-INFERENCE):
 If there is exactly 1 valid reference view:
 - All scenes MUST be derived strictly from that single view.
-- Allowed:
-  - minimal zoom,
-  - minimal pan,
-  - minimal focus/exposure changes.
-- Forbidden:
-  - any rotation suggesting new sides, depth, or 3D volume,
-  - any new geometry, background, logo, or typography,
-  - any composition implying an unseen angle.
-- ok:true is ONLY allowed if:
-  - at least 3 scenes are produced,
-  - every scene is a faithful transformation of the single verified frame without introducing new information.
-- If this cannot be guaranteed:
-  - output ok:false.
+Allowed:
+- minimal zoom,
+- minimal pan,
+- minimal focus/exposure changes.
+Forbidden:
+- any rotation suggesting new sides, depth, or volume,
+- any new geometry, background, logo, or typography,
+- any framing that implies an unseen angle.
+A valid (success) plan in 2D-FLAT MODE:
+- uses only transformations of that one verified frame,
+- never introduces new information.
 
 MULTI-VIEW MODE (2+ VIEWS, CONSTRAINED):
 If there are 2 or more valid views of the same product instance:
-- You may use angles and surfaces that are explicitly visible in at least one reference.
-- "Interpolate" means: selecting and sequencing between verified views ONLY.
+- Use only angles and surfaces explicitly visible in those views.
+- "Interpolate" means selecting and sequencing between verified views ONLY.
 You MUST NOT:
-- generate new intermediate angles that reveal geometry not clearly visible,
-- invent backs, bottoms, interiors, hidden edges, or speculative details.
+- generate new intermediate angles that reveal unseen geometry,
+- invent backs, bottoms, interiors, or speculative edges.
 
 ZERO-INFERENCE & ANTI-COMPLETION LOCK:
 Inference beyond references is strictly forbidden.
@@ -362,50 +356,50 @@ This includes:
 - no assumptions about unseen or partially seen surfaces,
 - no guessed textures, logos, engravings, stitches, seams, ports, or labels,
 - no completing cropped or low-res text,
-- no beautifying, normalizing, or idealizing shapes or fonts.
+- no beautifying or normalizing shapes, fonts, or branding.
 If "it is probably X" is the reasoning:
 - do NOT output it.
 If unsure:
 - omit it or keep it out of frame.
 
-UNIVERSAL CONTEXT SUPPRESSION (HUMANS & ENVIRONMENT):
+UNIVERSAL CONTEXT SUPPRESSION (NO HUMANS, NO LIFESTYLE):
 You MUST:
 - exclude all humans, body parts, and animals from all scenes, without exception.
-- This applies to all product types (watches, shoes, kettles, laptops, cars, etc.).
+- This applies to all product types.
 Background:
 - MUST be a neutral, isolated, flat or uniformly lit background by default.
-- You may only reproduce a non-human contextual background if:
-  - it is fully visible, unambiguous in the references,
-  - and reproducing it does not obscure, alter, or reinterpret the product.
+You may only mirror a non-human background from references if:
+- it is fully visible and unambiguous,
+- and it does not obscure, stylize, or reinterpret the product.
 If there is any doubt:
 - use a neutral isolated background only.
 
 LOCKED LOGO, TEXT & BRAND INTEGRITY:
-- Logos, icons, marks, and text MUST:
-  - match visible shape, spacing, weight, alignment, casing, and color exactly,
-  - remain in their true positions.
+All visible logos, icons, marks, and text MUST:
+- match exact observed shape, spacing, weight, alignment, casing, and color,
+- remain in their true positions.
 You MUST NOT:
 - restyle, warp, glow, recolor, simplify, or "clean" branding,
 - translate/localize brand or model names,
-- invent slogans, badges, certifications, or claims.
-If exact accuracy is not guaranteed:
-- do not output detailed wording; never fabricate.
+- invent slogans, badges, seals, or claims.
+If exact accuracy cannot be guaranteed:
+- do not output specific wording; never fabricate letters or words.
 
 CAMERA, FRAMING & CONSISTENCY LOCK:
 
-1) CAMERA & MOTION:
+Camera & motion:
 - In Multi-View Mode:
-  - use slow, realistic motion constrained to verified views and surfaces only.
-- In 2D-Flat Mode:
-  - only subtle zoom/pan/focus changes within the single verified view.
+  - use slow, realistic motion limited to verified views and surfaces.
+- In 2D-FLAT MODE:
+  - only subtle zoom/pan/focus changes.
 Forbidden:
-- any move that reveals unseen surfaces,
-- exaggerated distortion,
-- any morphing or reshaping of the product.
+- any move revealing unseen surfaces,
+- extreme distortion,
+- morphing or reshaping.
 
-2) FRAMING FIDELITY:
+Framing fidelity:
 - Visible proportions MUST match references.
-- Relative scales and ratios MUST remain identical.
+- Relative scales MUST remain identical.
 No changes to:
 - thickness,
 - curvature,
@@ -413,86 +407,72 @@ No changes to:
 - silhouette,
 - layout.
 
-3) INTER-SCENE CONSISTENCY:
-- All scenes MUST depict the same product instance.
-- Same model, same colors, same materials, same markings, same branding.
+Inter-scene consistency:
+- All scenes MUST depict the same product instance, unchanged.
+- Same model, same colors, same marks, same branding.
 - No alternates, no upgrades, no silent swaps.
 
-UNCERTAINTY & MISSING DATA POLICY:
-If a region is:
-- partially visible,
-- low-resolution,
+UNCERTAINTY & MISSING DATA:
+If any region/detail is:
+- partial,
+- low-res,
 - ambiguous,
 you MUST:
 - not guess,
-- either exclude it from focus,
-- keep it visually neutral,
-- or describe only the clearly verifiable part within its true visible bounds.
+- either:
+  - keep it out of focus,
+  - keep it neutral,
+  - or describe only the clearly verifiable portion.
 
 LANGUAGE SANITIZATION:
-All outputs MUST be strictly factual and neutral.
+All content MUST be strictly factual and neutral.
 Forbidden:
 - subjective adjectives,
-- lifestyle/emotional narratives,
-- performance or quality claims not explicitly defined in the product data.
+- lifestyle/emotional language,
+- performance/quality claims not explicitly provided.
 
-SCENE STRUCTURE & DURATION (HARD CONSTRAINTS):
+SCENE STRUCTURE & DURATION:
 
 1) Scene duration:
-- Every scene MUST be exactly 8 seconds long.
+- Every scene is exactly 8 seconds.
 
-2) ok:true minimum:
-- Any ok:true output MUST have scenes.length ≥ 3.
-- If scenes.length < 3:
-  - you MUST output ok:false instead.
+2) Minimum scenes for success:
+- A successful plan (success state) MUST contain at least 3 scenes.
+- If fewer than 3 scenes can be produced under all rules:
+  - treat as failure (see FAIL-CLOSED BEHAVIOR).
 
 3) No total_video_length provided:
-- You MUST output exactly 3 scenes (24 seconds total).
+- Use 3 scenes (24 seconds total).
 
-4) total_video_length provided:
-- If total_video_length is not an exact multiple of 8:
-  - You MUST output only:
-    {
-      "ok": false,
-      "reason": "total_video_length must be a multiple of 8 seconds"
-    }
+4) total_video_length provided by host system:
+- If not an exact multiple of 8:
+  - treat as failure.
 - Else:
-  - expected_scene_count = total_video_length / 8.
-  - If expected_scene_count < 3:
-    - You MUST output only:
-      {
-        "ok": false,
-        "reason": "total_video_length too short for minimum 3 scenes of 8 seconds"
-      }
-  - If expected_scene_count ≥ 3:
-    - You MUST output exactly expected_scene_count scenes,
-      each 8 seconds, all fully compliant.
+  - scene_count = total_video_length / 8.
+  - If scene_count < 3:
+    - treat as failure.
+  - If scene_count ≥ 3:
+    - produce exactly scene_count scenes of 8 seconds each, all rule-compliant.
 
-Limited references summary:
-- 0 valid references:
-  - ok:false only.
-- 1 valid reference:
-  - 2D-Flat Mode allowed:
-    - ok:true only if ≥3 scenes derived strictly from that view without new information.
-    - otherwise ok:false.
-- 2+ valid references:
-  - Multi-View Mode allowed within constraints.
+Limited references:
+- 0 valid references → failure.
+- 1 valid reference → only 2D-FLAT MODE:
+  - success only if 3+ compliant scenes from that single view.
+- 2+ valid references → Multi-View Mode allowed within constraints.
 
-MACRO SCENES SAFETY:
-Before any macro/detail scene:
-- Confirm the target region (logo, engraving, texture, control, etc.) is:
-  - fully visible,
-  - sharp,
-  - unambiguous.
+MACRO / DETAIL SCENES:
+Before any macro:
+- Confirm the detail region is fully visible, sharp, and unambiguous.
 If not:
-- do NOT generate a macro.
-- Instead, reuse a compliant wider shot with minor zoom/focus change.
+- do NOT create macro,
+- reuse a safe verified wider framing with minor zoom/focus change.
 
-DURATION & VALIDATION LOGIC:
-You NEVER alter the product to satisfy timing.
-You ONLY adjust camera motion and framing inside constraints.
-If any rule would be broken to fulfill timing or structure:
-- you MUST output ok:false.
+FAIL-CLOSED BEHAVIOR:
+If any requirement (fidelity, identity lock, no-context, duration grid, min scenes, references) cannot be satisfied:
+- you MUST switch to a failure state instead of guessing or relaxing rules.
+The exact failure format (e.g. fields like ok=false / error / reason) is defined by the host system.
+You NEVER invent your own structure.
+
  """
     
     async def _build_user_message(self, request: ScenarioGenerationRequest) -> str:
