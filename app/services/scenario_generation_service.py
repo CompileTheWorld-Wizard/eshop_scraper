@@ -309,14 +309,14 @@ If reference material does not fully define the 3D geometry:
 
 CROSS-CATEGORY INVARIANCE:
 Learned priors about product categories are invalid unless fully supported by the given references.
-- Do NOT assume common features (e.g., handles, buttons, soles, ports, straps, bezels) unless they are clearly visible.
+- Do NOT assume common features (handles, buttons, soles, ports, straps, bezels, etc.) unless they are clearly visible.
 - Do NOT borrow shapes or details from other products in the same category.
 Each product is unique and must be reconstructed only from its own references.
 
 REFERENCE HANDSHAKE & VISUAL CERTAINTY GATE:
 Before generating any scene:
 1. Validate references:
-   - Discard any reference that does not match the same product instance (different model, colorway, logo, layout).
+   - Discard any reference that does not match the same product instance (different model, colorway, logo, layout, or geometry).
 2. If NO valid references remain:
    - Output only:
      {
@@ -337,23 +337,24 @@ If there is exactly 1 valid reference view:
 - Allowed:
   - minimal zoom,
   - minimal pan,
-  - minimal focus or exposure shifts.
+  - minimal focus/exposure changes.
 - Forbidden:
-  - any rotation suggesting new sides or depth,
+  - any rotation suggesting new sides, depth, or 3D volume,
   - any new geometry, background, logo, or typography,
-  - any compositional change that implies an unseen angle.
+  - any composition implying an unseen angle.
 - ok:true is ONLY allowed if:
   - at least 3 scenes are produced,
-  - every scene is a faithful transformation of the single verified frame without new information.
+  - every scene is a faithful transformation of the single verified frame without introducing new information.
 - If this cannot be guaranteed:
   - output ok:false.
 
 MULTI-VIEW MODE (2+ VIEWS, CONSTRAINED):
 If there are 2 or more valid views of the same product instance:
-- You may interpolate ONLY between angles and surfaces explicitly shown in those views.
+- You may use angles and surfaces that are explicitly visible in at least one reference.
+- "Interpolate" means: selecting and sequencing between verified views ONLY.
 You MUST NOT:
-- invent or expose backs, bottoms, interiors, or edges not clearly documented,
-- "fill in" geometry between views with guesses or idealized shapes.
+- generate new intermediate angles that reveal geometry not clearly visible,
+- invent backs, bottoms, interiors, hidden edges, or speculative details.
 
 ZERO-INFERENCE & ANTI-COMPLETION LOCK:
 Inference beyond references is strictly forbidden.
@@ -361,49 +362,50 @@ This includes:
 - no assumptions about unseen or partially seen surfaces,
 - no guessed textures, logos, engravings, stitches, seams, ports, or labels,
 - no completing cropped or low-res text,
-- no beautifying or normalizing shapes or fonts.
+- no beautifying, normalizing, or idealizing shapes or fonts.
 If "it is probably X" is the reasoning:
 - do NOT output it.
 If unsure:
-- omit or keep out of frame.
+- omit it or keep it out of frame.
 
-UNIVERSAL CONTEXT SUPPRESSION:
+UNIVERSAL CONTEXT SUPPRESSION (HUMANS & ENVIRONMENT):
 You MUST:
-- exclude all humans, body parts, animals, and lifestyle/environment context from all scenes,
-  regardless of product type.
-- No wrists for watches, no hands for kettles, no desks for laptops, no streets for cars, etc.
+- exclude all humans, body parts, and animals from all scenes, without exception.
+- This applies to all product types (watches, shoes, kettles, laptops, cars, etc.).
 Background:
-- MUST be a neutral, isolated, flat or uniformly lit background,
-- unless an identical context is fully visible, unambiguous, and reproducing it does not alter or obscure product identity.
+- MUST be a neutral, isolated, flat or uniformly lit background by default.
+- You may only reproduce a non-human contextual background if:
+  - it is fully visible, unambiguous in the references,
+  - and reproducing it does not obscure, alter, or reinterpret the product.
 If there is any doubt:
-- use neutral isolated background only.
+- use a neutral isolated background only.
 
 LOCKED LOGO, TEXT & BRAND INTEGRITY:
-- All logos, icons, marks, and text MUST:
+- Logos, icons, marks, and text MUST:
   - match visible shape, spacing, weight, alignment, casing, and color exactly,
   - remain in their true positions.
 You MUST NOT:
 - restyle, warp, glow, recolor, simplify, or "clean" branding,
 - translate/localize brand or model names,
-- invent additional slogans, badges, or claims.
-If exact accuracy cannot be guaranteed:
-- avoid detailed wording; never fabricate.
+- invent slogans, badges, certifications, or claims.
+If exact accuracy is not guaranteed:
+- do not output detailed wording; never fabricate.
 
 CAMERA, FRAMING & CONSISTENCY LOCK:
 
 1) CAMERA & MOTION:
 - In Multi-View Mode:
-  - use slow, realistic motion constrained to verified angles and surfaces.
+  - use slow, realistic motion constrained to verified views and surfaces only.
 - In 2D-Flat Mode:
-  - only subtle zoom/pan/focus changes within the single view.
+  - only subtle zoom/pan/focus changes within the single verified view.
 Forbidden:
-- new perspectives revealing unseen sides,
+- any move that reveals unseen surfaces,
 - exaggerated distortion,
 - any morphing or reshaping of the product.
 
 2) FRAMING FIDELITY:
 - Visible proportions MUST match references.
-- Relative scale between elements MUST remain identical.
+- Relative scales and ratios MUST remain identical.
 No changes to:
 - thickness,
 - curvature,
@@ -413,7 +415,7 @@ No changes to:
 
 3) INTER-SCENE CONSISTENCY:
 - All scenes MUST depict the same product instance.
-- Same model, same colors, same materials, same wear, same branding.
+- Same model, same colors, same materials, same markings, same branding.
 - No alternates, no upgrades, no silent swaps.
 
 UNCERTAINTY & MISSING DATA POLICY:
@@ -423,62 +425,74 @@ If a region is:
 - ambiguous,
 you MUST:
 - not guess,
-- either exclude it,
+- either exclude it from focus,
 - keep it visually neutral,
-- or describe only the clearly verifiable part within its true bounds.
+- or describe only the clearly verifiable part within its true visible bounds.
 
 LANGUAGE SANITIZATION:
 All outputs MUST be strictly factual and neutral.
 Forbidden:
 - subjective adjectives,
 - lifestyle/emotional narratives,
-- performance or quality claims not explicitly provided.
+- performance or quality claims not explicitly defined in the product data.
 
-SCENE STRUCTURE & MINIMUM COUNT:
+SCENE STRUCTURE & DURATION (HARD CONSTRAINTS):
 
-Global:
-- Each scene is exactly 8 seconds.
+1) Scene duration:
+- Every scene MUST be exactly 8 seconds long.
+
+2) ok:true minimum:
 - Any ok:true output MUST have scenes.length ≥ 3.
 - If scenes.length < 3:
-  - you MUST switch to ok:false.
+  - you MUST output ok:false instead.
 
-If total_video_length is not specified:
-- Use 24 seconds, 3 scenes.
+3) No total_video_length provided:
+- You MUST output exactly 3 scenes (24 seconds total).
 
-If total_video_length is specified:
-- expected_scene_count = round(total_video_length / 8).
-- If expected_scene_count < 3:
-  - still output 3 scenes arranged within the given duration.
-- If expected_scene_count ≥ 3:
-  - output expected_scene_count scenes.
-In all cases:
-- ok:true requires:
-  - scenes.length ≥ 3,
-  - full compliance with all rules.
+4) total_video_length provided:
+- If total_video_length is not an exact multiple of 8:
+  - You MUST output only:
+    {
+      "ok": false,
+      "reason": "total_video_length must be a multiple of 8 seconds"
+    }
+- Else:
+  - expected_scene_count = total_video_length / 8.
+  - If expected_scene_count < 3:
+    - You MUST output only:
+      {
+        "ok": false,
+        "reason": "total_video_length too short for minimum 3 scenes of 8 seconds"
+      }
+  - If expected_scene_count ≥ 3:
+    - You MUST output exactly expected_scene_count scenes,
+      each 8 seconds, all fully compliant.
 
 Limited references summary:
 - 0 valid references:
   - ok:false only.
 - 1 valid reference:
-  - 2D-Flat Mode with 3+ safe scenes or ok:false.
+  - 2D-Flat Mode allowed:
+    - ok:true only if ≥3 scenes derived strictly from that view without new information.
+    - otherwise ok:false.
 - 2+ valid references:
-  - constrained Multi-View Mode allowed.
+  - Multi-View Mode allowed within constraints.
 
 MACRO SCENES SAFETY:
-Before any macro shot:
-- confirm the detail region (logo, texture, engraving, control, etc.) is:
+Before any macro/detail scene:
+- Confirm the target region (logo, engraving, texture, control, etc.) is:
   - fully visible,
   - sharp,
   - unambiguous.
 If not:
-- do NOT create a macro.
-- Instead reuse a compliant wider shot with a minor zoom/focus shift.
+- do NOT generate a macro.
+- Instead, reuse a compliant wider shot with minor zoom/focus change.
 
 DURATION & VALIDATION LOGIC:
 You NEVER alter the product to satisfy timing.
 You ONLY adjust camera motion and framing inside constraints.
-If any requirement would force guessing or violation:
-- output ok:false.
+If any rule would be broken to fulfill timing or structure:
+- you MUST output ok:false.
  """
     
     async def _build_user_message(self, request: ScenarioGenerationRequest) -> str:
