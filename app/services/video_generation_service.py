@@ -419,11 +419,12 @@ class VideoGenerationService:
             image_url = await self._generate_image_if_needed(scene_data, user_id, task_id, force_regenerate_first_frame)
             
             # Step 3: Generate video with retry logic
+            video_urls = []  # List of (public_url, signed_url) tuples
             while retry_count <= max_retries:
                 try:
                     update_task_progress(task_id, 3, f'Creating video from generated image (attempt {retry_count + 1})', 80.0)
-                    # Get both public URL (for database) and signed URL (for immediate access)
-                    public_video_url, signed_video_url = self._generate_video(scene_data, image_url, user_id, task_id)
+                    # Get list of (public_url, signed_url) tuples for all generated videos
+                    video_urls = self._generate_video(scene_data, image_url, user_id, task_id)
                     
                     # If we get here, video generation was successful
                     break
@@ -456,16 +457,24 @@ class VideoGenerationService:
             
             # Step 4: Update scene with generated URLs
             update_task_progress(task_id, 4, 'Saving results and finalizing', 95.0)
-            # Store public URL in database for permanent access
-            self._update_scene_urls(scene_id, image_url, public_video_url)
             
-            # Complete the task with signed URL for immediate access
-            complete_task(task_id, {
-                'scene_id': scene_id,
-                'image_url': image_url,
-                'video_url': signed_video_url,  # Signed URL for immediate access
-                'status': 'completed'
-            })
+            # Use the first video for the main video_url (for backward compatibility)
+            if video_urls:
+                public_video_url, signed_video_url = video_urls[0]
+                
+                # Store public URL in database for permanent access
+                self._update_scene_urls(scene_id, image_url, public_video_url)
+                
+                # Complete the task with signed URL for immediate access and all video URLs
+                complete_task(task_id, {
+                    'scene_id': scene_id,
+                    'image_url': image_url,
+                    'video_url': signed_video_url,  # Signed URL for immediate access (first video)
+                    'video_urls': video_urls,  # All videos: list of (public_url, signed_url) tuples
+                    'status': 'completed'
+                })
+            else:
+                raise Exception("No videos were generated")
             
             logger.info(f"Video generation task {task_id} completed successfully")
             
@@ -790,9 +799,9 @@ class VideoGenerationService:
         error_lower = error_msg.lower()
         return any(retryable_error.lower() in error_lower for retryable_error in retryable_errors)
     
-    def _generate_video(self, scene_data: Dict[str, Any], image_url: str, user_id: str, task_id: str) -> tuple[str, str]:
-        """Generate video using the image and visual prompt."""
-        temp_video_path = None
+    def _generate_video(self, scene_data: Dict[str, Any], image_url: str, user_id: str, task_id: str) -> List[tuple[str, str]]:
+        """Generate video using the image and visual prompt. Returns list of (public_url, signed_url) tuples for all generated videos."""
+        temp_video_paths = []
         try:
             visual_prompt = scene_data.get('visual_prompt')
             duration = scene_data.get('duration', 5)  # Default 5 seconds
@@ -819,7 +828,7 @@ class VideoGenerationService:
             # Create temporary file path for video
             temp_video_path = f"temp_video_{uuid.uuid4()}.mp4"
             
-            # Generate video using new Gemini function
+            # Generate 4 videos using new Gemini function
             result = generate_video_with_prompt_and_image(
                 prompt=visual_prompt,
                 image_url=image_url,
@@ -827,27 +836,37 @@ class VideoGenerationService:
                 # model="veo-3.0-fast-generate-preview",
                 file_path=temp_video_path,
                 aspect_ratio=video_ratio,
-                number_of_videos=1
+                number_of_videos=4
             )
             
             if not result or not result.get('success'):
                 error_msg = result.get('error', 'Unknown error') if result else 'No result returned'
                 raise Exception(f"Failed to generate video with Gemini: {error_msg}")
             
-            # Check if video was saved locally
+            # Check if videos were saved locally
             if not result.get('video_paths') or not result['video_paths']:
-                raise Exception("Video was not saved to local storage")
+                raise Exception("Videos were not saved to local storage")
             
-            # Get the video path (should be the temp file we created)
-            video_path = result['video_paths'][0]
-            if not os.path.exists(video_path):
-                raise Exception(f"Generated video file not found at {video_path}")
+            video_paths = result['video_paths']
+            logger.info(f"Generated {len(video_paths)} videos for scene {scene_id}")
             
-            # Update progress - uploading video to Supabase
-            update_task_progress(task_id, 3, 'Storing generated video', 75.0)
+            # Validate all video files exist
+            for video_path in video_paths:
+                if not os.path.exists(video_path):
+                    raise Exception(f"Generated video file not found at {video_path}")
+                temp_video_paths.append(video_path)
             
-            # Upload the local video file to Supabase
-            public_url, signed_url = self._store_local_video_in_supabase(video_path, user_id)
+            # Update progress - uploading videos to Supabase
+            update_task_progress(task_id, 3, f'Storing {len(video_paths)} generated videos', 75.0)
+            
+            # Upload all videos to Supabase
+            video_urls = []
+            for idx, video_path in enumerate(video_paths):
+                logger.info(f"Uploading video {idx + 1}/{len(video_paths)} to Supabase")
+                public_url, signed_url = self._store_local_video_in_supabase(video_path, user_id, scene_id)
+                video_urls.append((public_url, signed_url))
+            
+            logger.info(f"Successfully stored {len(video_urls)} videos for scene {scene_id}")
             
             # Deduct credits after successful generation
             credit_manager.deduct_credits(
@@ -855,22 +874,23 @@ class VideoGenerationService:
                 action_name="generate_scene",
                 reference_id=scene_data['id'],
                 reference_type="scene",
-                description=f"Generated video for scene {scene_data['id']}"
+                description=f"Generated {len(video_urls)} videos for scene {scene_data['id']}"
             )
             
-            return public_url, signed_url
+            return video_urls
             
         except Exception as e:
             logger.error(f"Failed to generate video for scene {scene_data['id']}: {e}")
             raise
         finally:
-            # Clean up temporary video file
-            if temp_video_path and os.path.exists(temp_video_path):
-                try:
-                    os.unlink(temp_video_path)
-                    logger.info(f"Cleaned up temporary video file: {temp_video_path}")
-                except Exception as cleanup_error:
-                    logger.warning(f"Failed to clean up temporary video file {temp_video_path}: {cleanup_error}")
+            # Clean up all temporary video files
+            for temp_video_path in temp_video_paths:
+                if temp_video_path and os.path.exists(temp_video_path):
+                    try:
+                        os.unlink(temp_video_path)
+                        logger.info(f"Cleaned up temporary video file: {temp_video_path}")
+                    except Exception as cleanup_error:
+                        logger.warning(f"Failed to clean up temporary video file {temp_video_path}: {cleanup_error}")
     
     def _store_local_image_in_supabase(self, image_path: str, user_id: str) -> str:
         """
@@ -999,13 +1019,14 @@ class VideoGenerationService:
                     logger.error(f"Failed to store image in Supabase after {MAX_RETRIES} attempts: {e}")
                     raise
     
-    def _store_local_video_in_supabase(self, video_path: str, user_id: str) -> tuple[str, str]:
+    def _store_local_video_in_supabase(self, video_path: str, user_id: str, scene_id: str) -> tuple[str, str]:
         """
         Upload a local video file to Supabase storage.
         
         Args:
             video_path: Path to the local video file
             user_id: User ID for organizing files
+            scene_id: Scene ID for organizing files
             
         Returns:
             tuple: (public_url, signed_url) - public URL for database, signed URL for immediate access
@@ -1016,8 +1037,8 @@ class VideoGenerationService:
                 with open(video_path, 'rb') as f:
                     video_data = f.read()
                 
-                # Generate unique filename
-                filename = f"video-files/{user_id}/{uuid.uuid4()}.mp4"
+                # Generate unique filename with user_id/scene_id structure
+                filename = f"video-files/{user_id}/{scene_id}/{uuid.uuid4()}.mp4"
                 
                 # Upload to Supabase storage
                 if not supabase_manager.is_connected():
