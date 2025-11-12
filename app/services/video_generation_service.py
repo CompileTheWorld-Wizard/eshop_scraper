@@ -1264,12 +1264,19 @@ class VideoGenerationService:
             raise
 
     def _update_scene_urls(self, scene_id: str, image_url: str, video_url: str):
-        """Update the scene with generated image and video URLs."""
+        """
+        Update the scene with generated image and video URLs.
+        
+        WARNING: This function is NOT currently used. Videos are stored in Supabase storage
+        but NOT saved to PostgreSQL database. Only images are saved to the database.
+        Do not use this function for video URLs.
+        """
         try:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
             
             # Update scene with new URLs (video_url is the public URL for database storage)
+            # NOTE: This function is deprecated for video URLs - videos should NOT be saved to PostgreSQL
             result = supabase_manager.client.table('video_scenes').update({
                 'image_url': image_url,
                 'generated_video_url': video_url,  # Public URL stored in database
