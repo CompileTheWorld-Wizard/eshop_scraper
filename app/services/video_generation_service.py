@@ -455,17 +455,15 @@ class VideoGenerationService:
                             logger.error(f"Non-retryable error: {error_msg}")
                         raise video_error
             
-            # Step 4: Update scene with generated URLs
+            # Step 4: Finalize task (videos are already stored in Supabase, no database update needed)
             update_task_progress(task_id, 4, 'Saving results and finalizing', 95.0)
             
-            # Use the first video for the main video_url (for backward compatibility)
             if video_urls:
+                # Use the first video for the main video_url (for backward compatibility in task metadata)
                 public_video_url, signed_video_url = video_urls[0]
                 
-                # Store public URL in database for permanent access
-                self._update_scene_urls(scene_id, image_url, public_video_url)
-                
                 # Complete the task with signed URL for immediate access and all video URLs
+                # Note: Videos are stored in Supabase but NOT saved to PostgreSQL database
                 complete_task(task_id, {
                     'scene_id': scene_id,
                     'image_url': image_url,
@@ -473,6 +471,8 @@ class VideoGenerationService:
                     'video_urls': video_urls,  # All videos: list of (public_url, signed_url) tuples
                     'status': 'completed'
                 })
+                
+                logger.info(f"All {len(video_urls)} videos stored in Supabase for scene {scene_id} (not saved to PostgreSQL)")
             else:
                 raise Exception("No videos were generated")
             
