@@ -856,8 +856,11 @@ class VideoGenerationService:
                     raise Exception(f"Generated video file not found at {video_path}")
                 temp_video_paths.append(video_path)
             
-            # Update progress - uploading videos to Supabase
+            # Update progress - clearing existing videos and uploading new ones
             update_task_progress(task_id, 3, f'Storing {len(video_paths)} generated videos', 75.0)
+            
+            # Clear existing videos in the target folder before uploading new ones
+            self._clear_existing_videos_in_folder(user_id, scene_id)
             
             # Upload all videos to Supabase
             video_urls = []
@@ -1018,6 +1021,60 @@ class VideoGenerationService:
                 else:
                     logger.error(f"Failed to store image in Supabase after {MAX_RETRIES} attempts: {e}")
                     raise
+    
+    def _clear_existing_videos_in_folder(self, user_id: str, scene_id: str):
+        """
+        Clear all existing videos in the target folder before uploading new ones.
+        
+        Args:
+            user_id: User ID for the folder path
+            scene_id: Scene ID for the folder path
+        """
+        try:
+            if not supabase_manager.is_connected():
+                logger.warning("Supabase connection not available, skipping folder cleanup")
+                return
+            
+            # Construct the folder path
+            folder_path = f"video-files/{user_id}/{scene_id}"
+            
+            logger.info(f"Checking for existing videos in folder: {folder_path}")
+            
+            # List all files in the folder
+            try:
+                files = supabase_manager.client.storage.from_('video-files').list(folder_path)
+                
+                if not files:
+                    logger.info(f"No existing videos found in folder {folder_path}")
+                    return
+                
+                # Filter for video files (mp4 files)
+                video_files = [f for f in files if f.get('name', '').endswith('.mp4')]
+                
+                if not video_files:
+                    logger.info(f"No video files found in folder {folder_path}")
+                    return
+                
+                logger.info(f"Found {len(video_files)} existing video(s) in folder {folder_path}, clearing them...")
+                
+                # Construct full paths for deletion
+                file_paths_to_delete = [f"{folder_path}/{f['name']}" for f in video_files]
+                
+                # Delete all video files
+                delete_result = supabase_manager.client.storage.from_('video-files').remove(file_paths_to_delete)
+                
+                logger.info(f"Successfully cleared {len(video_files)} existing video(s) from folder {folder_path}")
+                
+            except Exception as list_error:
+                # If folder doesn't exist or is empty, that's fine - just log and continue
+                if "not found" in str(list_error).lower() or "does not exist" in str(list_error).lower():
+                    logger.info(f"Folder {folder_path} does not exist or is empty, no cleanup needed")
+                else:
+                    logger.warning(f"Failed to list files in folder {folder_path}: {list_error}. Continuing with upload...")
+                    
+        except Exception as e:
+            # Don't fail the entire operation if cleanup fails - just log and continue
+            logger.warning(f"Failed to clear existing videos in folder video-files/{user_id}/{scene_id}: {e}. Continuing with upload...")
     
     def _store_local_video_in_supabase(self, video_path: str, user_id: str, scene_id: str) -> tuple[str, str]:
         """
