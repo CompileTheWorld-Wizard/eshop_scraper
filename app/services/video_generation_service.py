@@ -419,12 +419,13 @@ class VideoGenerationService:
             image_url = await self._generate_image_if_needed(scene_data, user_id, task_id, force_regenerate_first_frame)
             
             # Step 3: Generate video with retry logic
-            video_urls = []  # List of (public_url, signed_url) tuples
+            public_video_url = None
+            signed_video_url = None
             while retry_count <= max_retries:
                 try:
                     update_task_progress(task_id, 3, f'Creating video from generated image (attempt {retry_count + 1})', 80.0)
-                    # Get list of (public_url, signed_url) tuples for all generated videos
-                    video_urls = self._generate_video(scene_data, image_url, user_id, task_id)
+                    # Get (public_url, signed_url) tuple for the generated video
+                    public_video_url, signed_video_url = self._generate_video(scene_data, image_url, user_id, task_id)
                     
                     # If we get here, video generation was successful
                     break
@@ -455,26 +456,24 @@ class VideoGenerationService:
                             logger.error(f"Non-retryable error: {error_msg}")
                         raise video_error
             
-            # Step 4: Finalize task (videos are already stored in Supabase, no database update needed)
+            # Step 4: Update scene with generated URLs and finalize task
             update_task_progress(task_id, 4, 'Saving results and finalizing', 95.0)
             
-            if video_urls:
-                # Use the first video for the main video_url (for backward compatibility in task metadata)
-                public_video_url, signed_video_url = video_urls[0]
+            if public_video_url and signed_video_url:
+                # Store public URL in database for permanent access
+                self._update_scene_urls(scene_id, image_url, public_video_url)
                 
-                # Complete the task with signed URL for immediate access and all video URLs
-                # Note: Videos are stored in Supabase but NOT saved to PostgreSQL database
+                # Complete the task with signed URL for immediate access
                 complete_task(task_id, {
                     'scene_id': scene_id,
                     'image_url': image_url,
-                    'video_url': signed_video_url,  # Signed URL for immediate access (first video)
-                    'video_urls': video_urls,  # All videos: list of (public_url, signed_url) tuples
+                    'video_url': signed_video_url,  # Signed URL for immediate access
                     'status': 'completed'
                 })
                 
-                logger.info(f"All {len(video_urls)} videos stored in Supabase for scene {scene_id} (not saved to PostgreSQL)")
+                logger.info(f"Video stored in Supabase and saved to PostgreSQL for scene {scene_id}")
             else:
-                raise Exception("No videos were generated")
+                raise Exception("No video was generated")
             
             logger.info(f"Video generation task {task_id} completed successfully")
             
@@ -799,9 +798,9 @@ class VideoGenerationService:
         error_lower = error_msg.lower()
         return any(retryable_error.lower() in error_lower for retryable_error in retryable_errors)
     
-    def _generate_video(self, scene_data: Dict[str, Any], image_url: str, user_id: str, task_id: str) -> List[tuple[str, str]]:
-        """Generate video using the image and visual prompt. Returns list of (public_url, signed_url) tuples for all generated videos."""
-        temp_video_paths = []
+    def _generate_video(self, scene_data: Dict[str, Any], image_url: str, user_id: str, task_id: str) -> tuple[str, str]:
+        """Generate video using the image and visual prompt. Returns (public_url, signed_url) tuple for the generated video."""
+        temp_video_path = None
         try:
             visual_prompt = scene_data.get('visual_prompt')
             duration = scene_data.get('duration', 5)  # Default 5 seconds
@@ -828,7 +827,7 @@ class VideoGenerationService:
             # Create temporary file path for video
             temp_video_path = f"temp_video_{uuid.uuid4()}.mp4"
             
-            # Generate 4 videos using new Gemini function
+            # Generate 1 video using new Gemini function
             result = generate_video_with_prompt_and_image(
                 prompt=visual_prompt,
                 image_url=image_url,
@@ -836,40 +835,33 @@ class VideoGenerationService:
                 # model="veo-3.0-fast-generate-preview",
                 file_path=temp_video_path,
                 aspect_ratio=video_ratio,
-                number_of_videos=4
+                number_of_videos=1
             )
             
             if not result or not result.get('success'):
                 error_msg = result.get('error', 'Unknown error') if result else 'No result returned'
                 raise Exception(f"Failed to generate video with Gemini: {error_msg}")
             
-            # Check if videos were saved locally
+            # Check if video was saved locally
             if not result.get('video_paths') or not result['video_paths']:
-                raise Exception("Videos were not saved to local storage")
+                raise Exception("Video was not saved to local storage")
             
-            video_paths = result['video_paths']
-            logger.info(f"Generated {len(video_paths)} videos for scene {scene_id}")
+            # Get the video path (should be the temp file we created)
+            video_path = result['video_paths'][0]
+            if not os.path.exists(video_path):
+                raise Exception(f"Generated video file not found at {video_path}")
             
-            # Validate all video files exist
-            for video_path in video_paths:
-                if not os.path.exists(video_path):
-                    raise Exception(f"Generated video file not found at {video_path}")
-                temp_video_paths.append(video_path)
+            # Update progress - clearing existing videos and uploading new one
+            update_task_progress(task_id, 3, 'Storing generated video', 75.0)
             
-            # Update progress - clearing existing videos and uploading new ones
-            update_task_progress(task_id, 3, f'Storing {len(video_paths)} generated videos', 75.0)
-            
-            # Clear existing videos in the target folder before uploading new ones
+            # Clear existing videos in the target folder before uploading new one
             self._clear_existing_videos_in_folder(user_id, scene_id)
             
-            # Upload all videos to Supabase
-            video_urls = []
-            for idx, video_path in enumerate(video_paths):
-                logger.info(f"Uploading video {idx + 1}/{len(video_paths)} to Supabase")
-                public_url, signed_url = self._store_local_video_in_supabase(video_path, user_id, scene_id)
-                video_urls.append((public_url, signed_url))
+            # Upload video to Supabase
+            logger.info(f"Uploading video to Supabase for scene {scene_id}")
+            public_url, signed_url = self._store_local_video_in_supabase(video_path, user_id, scene_id)
             
-            logger.info(f"Successfully stored {len(video_urls)} videos for scene {scene_id}")
+            logger.info(f"Successfully stored video for scene {scene_id}")
             
             # Deduct credits after successful generation
             credit_manager.deduct_credits(
@@ -877,23 +869,22 @@ class VideoGenerationService:
                 action_name="generate_scene",
                 reference_id=scene_data['id'],
                 reference_type="scene",
-                description=f"Generated {len(video_urls)} videos for scene {scene_data['id']}"
+                description=f"Generated video for scene {scene_data['id']}"
             )
             
-            return video_urls
+            return public_url, signed_url
             
         except Exception as e:
             logger.error(f"Failed to generate video for scene {scene_data['id']}: {e}")
             raise
         finally:
-            # Clean up all temporary video files
-            for temp_video_path in temp_video_paths:
-                if temp_video_path and os.path.exists(temp_video_path):
-                    try:
-                        os.unlink(temp_video_path)
-                        logger.info(f"Cleaned up temporary video file: {temp_video_path}")
-                    except Exception as cleanup_error:
-                        logger.warning(f"Failed to clean up temporary video file {temp_video_path}: {cleanup_error}")
+            # Clean up temporary video file
+            if temp_video_path and os.path.exists(temp_video_path):
+                try:
+                    os.unlink(temp_video_path)
+                    logger.info(f"Cleaned up temporary video file: {temp_video_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temporary video file {temp_video_path}: {cleanup_error}")
     
     def _store_local_image_in_supabase(self, image_path: str, user_id: str) -> str:
         """
@@ -1322,18 +1313,18 @@ class VideoGenerationService:
 
     def _update_scene_urls(self, scene_id: str, image_url: str, video_url: str):
         """
-        Update the scene with generated image and video URLs.
+        Update the scene with generated image and video URLs in PostgreSQL database.
         
-        WARNING: This function is NOT currently used. Videos are stored in Supabase storage
-        but NOT saved to PostgreSQL database. Only images are saved to the database.
-        Do not use this function for video URLs.
+        Args:
+            scene_id: The UUID of the scene
+            image_url: The public URL of the generated image
+            video_url: The public URL of the generated video
         """
         try:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
             
             # Update scene with new URLs (video_url is the public URL for database storage)
-            # NOTE: This function is deprecated for video URLs - videos should NOT be saved to PostgreSQL
             result = supabase_manager.client.table('video_scenes').update({
                 'image_url': image_url,
                 'generated_video_url': video_url,  # Public URL stored in database
