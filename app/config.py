@@ -312,7 +312,7 @@ class Settings:
     # ElevenLabs Settings
     ELEVENLABS_API_KEY: str = os.getenv("ELEVENLABS_API_KEY", "")
     ELEVENLABS_ENABLED: bool = os.getenv("ELEVENLABS_ENABLED", "False").lower() == "true"
-    ELEVENLABS_DEFAULT_MODEL: str = os.getenv("ELEVENLABS_DEFAULT_MODEL", "eleven_multilingual_v2")
+    ELEVENLABS_DEFAULT_MODEL: str = os.getenv("ELEVENLABS_DEFAULT_MODEL", "eleven_v3")
     ELEVENLABS_DEFAULT_OUTPUT_FORMAT: str = os.getenv("ELEVENLABS_DEFAULT_OUTPUT_FORMAT", "mp3_44100_128")
     ELEVENLABS_MAX_RETRIES: int = int(os.getenv("ELEVENLABS_MAX_RETRIES", "3"))
     ELEVENLABS_TIMEOUT: int = int(os.getenv("ELEVENLABS_TIMEOUT", "60"))  # 1 minute

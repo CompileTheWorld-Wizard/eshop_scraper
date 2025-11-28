@@ -149,7 +149,7 @@ SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 OPENAI_API_KEY=your_openai_api_key
 ELEVENLABS_API_KEY=your_elevenlabs_api_key
 ELEVENLABS_DEFAULT_OUTPUT_FORMAT=mp3_44100_128
-ELEVENLABS_DEFAULT_MODEL=eleven_multilingual_v2
+ELEVENLABS_DEFAULT_MODEL=eleven_v3
 
 # Security (Optional)
 API_KEY_1=your_secure_api_key_here
@@ -157,6 +157,8 @@ API_KEY_1_NAME=Premium User
 API_KEY_1_RATE_LIMIT=200
 API_KEY_1_DAILY_LIMIT=5000
 ```
+
+Set `ELEVENLABS_DEFAULT_MODEL` to `eleven_v3` to opt into the ElevenLabs V3 (Alpha) engine. Override the env var per deployment if you need to fall back to a previous multilingual model for latency-sensitive workflows.
 
 ### Logging System
 
