@@ -409,9 +409,9 @@ class AudioGenerationService:
 Create a clean, spoken audio script with NO stage directions, music cues, emojis, or brackets.
 
 SCRIPT STRUCTURE (3 parts):
-1. HOOK (2-3 seconds): Grab attention immediately with a compelling question or statement
-2. MAIN (80% of script): Present product features, benefits, and value proposition
-3. CTA (2-3 seconds): Clear call-to-action to drive conversion
+1. HOOK (2-3 seconds): Start with a fun, intriguing, or relatable question or statement that grabs attention immediately.
+2. MAIN (80% of script): Present product features and benefits, speaking in a friendly, conversational tone. Use natural speech patterns, like laughter, pauses, or excitement when appropriate. Focus on how the product makes life easier or more enjoyable.
+3. CTA (2-3 seconds): Clear call-to-action that’s casual but persuasive. Encourage the listener to take action with a friendly prompt or playful invitation.
 
 REQUIREMENTS:
 - Duration: {scenario.total_duration} seconds
