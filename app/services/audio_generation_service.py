@@ -14,6 +14,18 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from elevenlabs import ElevenLabs
 
+import subprocess
+import json
+from io import BytesIO
+
+try:
+    from pydub import AudioSegment
+    PYDUB_AVAILABLE = True
+except (ImportError, ModuleNotFoundError):
+    # pydub may not be available or may have dependency issues (e.g., audioop removed in Python 3.13+)
+    PYDUB_AVAILABLE = False
+    AudioSegment = None  # Set to None to avoid NameError
+
 from app.models import (
     AudioGenerationRequest, AudioGenerationResponse, GeneratedScenario
 )
@@ -23,6 +35,10 @@ from app.config import settings
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
+
+# Log pydub availability status after logger is initialized
+if not PYDUB_AVAILABLE:
+    logger.warning("pydub not available. Audio duration calculation from text will use fallback method.")
 
 
 class AudioGenerationService:
@@ -110,7 +126,7 @@ class AudioGenerationService:
 
             # Step 3: Generate audio script using OpenAI
             logger.info("Generating audio script...")
-            audio_script = asyncio.run(self._generate_audio_script(scenario, words_per_minute, test_text, test_audio_duration))
+            audio_script = asyncio.run(self._generate_audio_script(scenario, request.voice_id, words_per_minute, test_text, test_audio_duration))
             if not audio_script:
                 raise Exception("Failed to generate audio script")
 
@@ -371,12 +387,25 @@ class AudioGenerationService:
                     logger.info(f"Found scenario data in table: video_scenarios")
                     
                     # Convert to GeneratedScenario object
+                    # Handle both total_duration and estimated_duration column names
+                    duration = scenario_data.get('total_duration') or scenario_data.get('estimated_duration')
+                    if duration is None:
+                        duration = 24  # Default to 24 seconds for audio generation
+                        logger.warning(f"No duration found in database for scenario, defaulting to 24 seconds")
+                    else:
+                        # Ensure duration is at least 24 seconds for audio generation
+                        if duration < 24:
+                            logger.warning(f"Database duration ({duration}s) is less than 24s, using 24s for audio generation")
+                            duration = 24
+                    
+                    logger.info(f"Using duration: {duration}s for audio generation")
+                    
                     return GeneratedScenario(
                         title=scenario_data.get('title', f'Short {short_id[:8]}'),
                         description=scenario_data.get('description', 'Product showcase video'),
                         detected_demographics=None,
                         scenes=[],
-                        total_duration=scenario_data.get('total_duration', 30),
+                        total_duration=duration,
                         style=scenario_data.get('style', 'trendy-influencer-vlog'),
                         mood=scenario_data.get('mood', 'energetic'),
                         resolution=scenario_data.get('resolution', '1080x1920'),
@@ -397,62 +426,245 @@ class AudioGenerationService:
             logger.error(f"Failed to get scenario for short_id {short_id}: {e}")
             return None
 
+    async def _calculate_audio_duration_from_text(self, text: str, voice_id: str) -> float:
+        """
+        Generate audio in memory using TTS and return its duration in seconds.
+        
+        Args:
+            text: The text to convert to audio
+            voice_id: ElevenLabs voice ID to use for generation
+            
+        Returns:
+            Duration in seconds, or 0.0 on error
+        """
+        try:
+            if not self.elevenlabs_client:
+                logger.error("ElevenLabs client not initialized")
+                return 0.0
 
-    async def _generate_audio_script(self, scenario: GeneratedScenario, words_per_minute: float, test_text: str = "", test_audio_duration: float = 0) -> Optional[str]:
-        """Generate audio script using OpenAI based on scenario and speed"""
+            # Generate audio using ElevenLabs
+            audio_generator = self.elevenlabs_client.text_to_speech.convert(
+                voice_id=voice_id,
+                output_format=settings.ELEVENLABS_DEFAULT_OUTPUT_FORMAT,
+                text=text,
+                model_id=settings.ELEVENLABS_DEFAULT_MODEL
+            )
+
+            # Convert generator to bytes
+            audio_bytes = b''.join(audio_generator)
+
+            # Use pydub to measure duration if available
+            if PYDUB_AVAILABLE:
+                try:
+                    audio_segment = AudioSegment.from_file(BytesIO(audio_bytes), format="mp3")
+                    duration = len(audio_segment) / 1000.0  # duration in seconds
+                    logger.info(f"Calculated audio duration from text: {duration:.2f}s")
+                    return duration
+                except Exception as e:
+                    logger.warning(f"Failed to parse audio with pydub: {e}, using fallback method")
+            
+            # Fallback: estimate duration based on file size and bitrate
+            file_size_bytes = len(audio_bytes)
+            estimated_bitrate_kbps = 128  # MP3 at 128 kbps
+            bytes_per_second = (estimated_bitrate_kbps * 1000) / 8
+            estimated_duration = file_size_bytes / bytes_per_second
+            logger.info(f"Estimated audio duration (fallback): {estimated_duration:.2f}s")
+            return estimated_duration
+
+        except Exception as e:
+            logger.error(f"Error calculating audio duration from text: {e}")
+            return 0.0
+
+    async def _generate_audio_script(
+        self,
+        scenario: GeneratedScenario,
+        voice_id: str,
+        words_per_minute: float,
+        test_text: str = "",
+        test_audio_duration: float = 0,
+        max_retries: int = 5
+    ) -> Optional[str]:
+        """
+        Generate a spoken script that matches target audio duration for TTS.
+        Uses GPT for script generation and iteratively adjusts based on TTS duration.
+        """
         try:
             if not self.openai_client:
                 logger.error("OpenAI client not initialized")
                 return None
+
+            # --- Step 1: calibrate words per second ---
+            if test_text and test_audio_duration > 0:
+                wps = len(test_text.split()) / test_audio_duration
+                logger.info(f"Calibrated WPS from test audio: {wps:.3f}")
+            else:
+                wps = words_per_minute / 60
+                logger.info(f"Using default WPS from WPM: {wps:.3f}")
             
-            system_message = f"""You are an expert copywriter for social media product promotion videos.
-Create a clean, spoken audio script with NO stage directions, music cues, emojis, or brackets.
+            # Ensure minimum WPS to avoid too few words (safety check)
+            if wps < 1.5:
+                logger.warning(f"WPS ({wps:.3f}) is too low, using minimum 2.0 WPS for better accuracy")
+                wps = 2.0
 
-SCRIPT STRUCTURE (3 parts):
-1. HOOK (2-3 seconds): Start with a fun, intriguing, or relatable question or statement that grabs attention immediately.
-2. MAIN (80% of script): Present product features and benefits, speaking in a friendly, conversational tone. Use natural speech patterns, like laughter, pauses, or excitement when appropriate. Focus on how the product makes life easier or more enjoyable.
-3. CTA (2-3 seconds): Clear call-to-action that’s casual but persuasive. Encourage the listener to take action with a friendly prompt or playful invitation.
+            # --- Step 2: initial target words ---
+            # Calculate required words for target duration
+            # Slightly reduce target to prefer being under rather than over (for 24s target, aim for 23.9s)
+            target_duration_adjusted = scenario.total_duration - 0.1  # Target slightly under to avoid going over
+            required_words = round(target_duration_adjusted * wps)
+            
+            # Ensure minimum word count for 24 seconds (safety check)
+            if scenario.total_duration >= 24 and required_words < 48:
+                logger.warning(f"Calculated words ({required_words}) seems too low for {scenario.total_duration}s, using minimum 48 words")
+                required_words = 48
+            
+            logger.info(f"Target duration: {scenario.total_duration}s, initial words: {required_words}, WPS: {wps:.3f}")
+            
+            word_count_feedback = ""  # Initialize feedback for first attempt
 
-REQUIREMENTS:
-- Duration: {scenario.total_duration} seconds
+            for attempt in range(1, max_retries + 1):
+                system_message = f"""
+You are an expert voiceover scriptwriter specializing in precise duration scripts.
+
+Write a natural, conversational spoken script for a promotional video.
+
+CRITICAL REQUIREMENTS:
+- The script MUST result in approximately {scenario.total_duration} seconds of spoken audio when converted to speech.
+- The script MUST contain exactly {required_words} words. Count carefully - this is critical for duration accuracy.
+- Only natural spoken sentences, no emojis, brackets, or stage directions.
 - Style: {scenario.style}
 - Mood: {scenario.mood}
-- Write ONLY what will be spoken - no [music cues], no emojis, no stage directions
-- Keep it natural, conversational, and engaging
-- Focus on product benefits and creating desire
 
-VOICE CALIBRATION:
-This voice speaks at {words_per_minute:.1f} words per minute.
-Example: "{test_text}" took {test_audio_duration:.2f} seconds to speak.
+DURATION TARGET:
+- Target audio duration: {scenario.total_duration} seconds
+- Word count requirement: {required_words} words (this word count is calculated to achieve {scenario.total_duration} seconds)
+- If the script is too short, it will result in audio shorter than {scenario.total_duration} seconds
+- If the script is too long, it will result in audio longer than {scenario.total_duration} seconds
+- You MUST generate exactly {required_words} words to match the {scenario.total_duration}-second target
 
-OUTPUT FORMAT: Return only the clean spoken script without any formatting, labels, or non-spoken elements."""
+SCRIPT STRUCTURE:
+1. Hook (2–3 sec) - approximately {round(required_words * 0.1)} words
+2. Main content (80%) - approximately {round(required_words * 0.8)} words
+3. CTA (2–3 sec) - approximately {round(required_words * 0.1)} words
 
-            user_message = f"""Create a promotional audio script for this product:
+OUTPUT FORMAT:
+- Return ONLY the spoken script text
+- No word count labels, no duration notes, just the script
+- Ensure the script contains exactly {required_words} words when spoken
+"""
 
+                user_message = f"""
+Product:
 Title: {scenario.title}
-Description: {scenario.description}"""
+Description: {scenario.description}
 
-            logger.info("Sending request to OpenAI for script generation...")
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_message}
-                ],
-                max_tokens=500,
-                temperature=0.7
-            )
+Generate a spoken script that will result in {scenario.total_duration} seconds of audio when converted to speech.
 
-            if response.choices and response.choices[0].message.content:
+The script must contain exactly {required_words} words. This word count is critical - it has been calculated to achieve {scenario.total_duration} seconds of audio duration.
+
+Count the words carefully and ensure the final script has exactly {required_words} words.{word_count_feedback}
+"""
+
+                logger.info(f"Attempt {attempt}: generating script with GPT (target: {required_words} words for {scenario.total_duration}s)...")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    max_tokens=1000,  # Increased to allow for longer scripts (24s needs more words)
+                    temperature=0.4  # Lower temperature for more consistent word count
+                )
+
+                if not (response.choices and response.choices[0].message.content):
+                    logger.error("No response from GPT.")
+                    return None
+
                 script = response.choices[0].message.content.strip()
-                logger.info(f"Generated audio script: {len(script)} characters")
-                return script
+                word_count = len(script.split())
+                logger.info(f"Generated script words: {word_count} (requested: {required_words})")
 
+                # --- Step 3: check actual TTS duration ---
+                # Use the new method to calculate duration from text
+                audio_duration = await self._calculate_audio_duration_from_text(script, voice_id)
+                logger.info(f"TTS duration: {audio_duration:.2f}s (target: {scenario.total_duration}s)")
+                
+                # Calculate duration difference
+                duration_diff = abs(audio_duration - scenario.total_duration)
+                duration_ratio = audio_duration / scenario.total_duration if scenario.total_duration > 0 else 1.0
+                
+                # For 24 seconds target, prefer being slightly under (23.5-24s) rather than over (24-24.5s)
+                # Accept if within 0.2s tolerance, but prefer being under target
+                tolerance = 0.2  # Tighter tolerance for precision
+                
+                # Check if we're within tolerance
+                if duration_diff < tolerance:
+                    # Prefer being slightly under target (23.8-24s) over slightly over (24-24.2s)
+                    if audio_duration <= scenario.total_duration:
+                        logger.info(f"Script matches target duration! ({audio_duration:.2f}s vs {scenario.total_duration}s, diff: {duration_diff:.2f}s)")
+                        return script
+                    elif audio_duration <= scenario.total_duration + 0.1:  # Allow up to 0.1s over
+                        logger.info(f"Script is slightly over but acceptable ({audio_duration:.2f}s vs {scenario.total_duration}s)")
+                        return script
+                    # If more than 0.1s over, continue to adjust
+                
+                # If we're way off (more than 20% difference), be more aggressive
+                if duration_ratio < 0.8 or duration_ratio > 1.2:
+                    logger.warning(f"Audio duration is significantly off: {audio_duration:.2f}s (target: {scenario.total_duration}s, ratio: {duration_ratio:.2f})")
+                
+                # Don't return early if we're way off - keep retrying
+                if attempt < max_retries:
+                    # --- Step 4: adjust required words based on TTS speed ---
+                    # Use adjustment ratio: if we got 25s but need 24s, we need 24/25 = 0.96x (reduce words)
+                    # Be slightly more aggressive when over target to get closer to exactly 24s
+                    if audio_duration > scenario.total_duration:
+                        # We're over target, reduce words more aggressively
+                        adjustment_ratio = (scenario.total_duration - 0.1) / audio_duration if audio_duration > 0 else 1.0
+                        logger.info(f"Audio is over target ({audio_duration:.2f}s > {scenario.total_duration}s), applying aggressive reduction ratio: {adjustment_ratio:.3f}")
+                    else:
+                        # We're under target, normal adjustment
+                        adjustment_ratio = scenario.total_duration / audio_duration if audio_duration > 0 else 1.0
+                    
+                    # Adjust based on what we asked for (required_words), not what GPT gave (word_count)
+                    # This accounts for GPT not generating enough words
+                    new_required_words = round(required_words * adjustment_ratio)
+                    
+                    # Also account for word count mismatch - if GPT generated fewer words than requested
+                    if word_count < required_words:
+                        # GPT didn't generate enough, so we need even more
+                        word_count_ratio = required_words / word_count if word_count > 0 else 1.0
+                        new_required_words = round(new_required_words * word_count_ratio)
+                        logger.info(f"GPT generated {word_count} words instead of {required_words}, applying additional {word_count_ratio:.2f}x multiplier")
+                    
+                    # Ensure minimum word count based on target duration
+                    min_words = max(10, round(scenario.total_duration * 1.5))  # At least 1.5 words per second
+                    required_words = max(min_words, new_required_words)
+                    
+                    # Cap maximum words to prevent excessive length (3 words per second max)
+                    max_words = round(scenario.total_duration * 3.0)
+                    if required_words > max_words:
+                        logger.warning(f"Calculated words ({required_words}) exceeds maximum ({max_words}), capping to maximum")
+                        required_words = max_words
+                    logger.info(f"Adjustment ratio: {adjustment_ratio:.2f}x, adjusting target words from {word_count} to {required_words} for next attempt...")
+                    
+                    # Prepare feedback for next attempt based on word count and duration
+                    if word_count < required_words * 0.8:
+                        word_count_feedback = f"\n\nCRITICAL: Previous attempt generated only {word_count} words when {required_words} were needed. The resulting audio was {audio_duration:.1f}s instead of {scenario.total_duration}s. You MUST generate the full {required_words} words this time to reach {scenario.total_duration} seconds."
+                    elif word_count > required_words * 1.2:
+                        word_count_feedback = f"\n\nCRITICAL: Previous attempt generated {word_count} words when {required_words} were needed. The resulting audio was {audio_duration:.1f}s instead of {scenario.total_duration}s. You MUST generate exactly {required_words} words this time to reach {scenario.total_duration} seconds."
+                    else:
+                        word_count_feedback = f"\n\nPrevious attempt resulted in {audio_duration:.1f}s audio (target: {scenario.total_duration}s). Adjust the script length to achieve {scenario.total_duration} seconds by generating exactly {required_words} words."
+                else:
+                    # Last attempt - return what we have even if not perfect
+                    logger.warning(f"Reached max retries. Final duration: {audio_duration:.2f}s (target: {scenario.total_duration}s)")
+                    return script
+
+            logger.error("Failed to generate script matching exact duration after max retries.")
             return None
 
         except Exception as e:
-            logger.error(f"Failed to generate audio script: {e}")
+            logger.error(f"Error generating audio script: {e}")
             return None
+
 
 
     async def _generate_final_audio_with_info(self, voice_id: str, script: str, user_id: str) -> Optional[Dict[str, Any]]:
