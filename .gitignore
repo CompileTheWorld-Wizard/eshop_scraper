@@ -17,3 +17,7 @@ logs/
 *.log
 *key*.json
 *temp
+*.mp4
+
+#temp
+temp/
