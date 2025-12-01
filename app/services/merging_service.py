@@ -110,76 +110,147 @@ class MergingService:
     ):
         """Background worker for finalizing shorts."""
         try:
+            logger.info("=" * 80)
+            logger.info(f"[MERGE FLOW] Starting merge process for short_id: {short_id}, task_id: {task_id}")
+            logger.info("=" * 80)
+            
             # Start task
+            logger.info(f"[STEP 0] Initializing merge task...")
             start_task(task_id)
             update_task_progress(
                 task_id, 0.1, "Fetching video scenes and audio data")
+            logger.info(f"[STEP 0] ✓ Task initialized successfully")
 
             # Step 1: Fetch video scenes and audio data
+            logger.info(f"[STEP 1] Fetching video scenes and audio data...")
+            logger.info(f"[STEP 1.1] Fetching video scenes for short_id: {short_id}")
             scenes_data = self._fetch_video_scenes(short_id)
             if not scenes_data:
                 raise Exception("No video scenes found for this short")
+            logger.info(f"[STEP 1.1] ✓ Found {len(scenes_data)} video scenes")
+            for i, scene in enumerate(scenes_data, 1):
+                logger.info(f"[STEP 1.1]   Scene {i}: id={scene.get('id')}, number={scene.get('scene_number')}, "
+                          f"duration={scene.get('duration')}s, url={scene.get('generated_video_url', 'N/A')[:80]}...")
 
             # Product info no longer needed since thumbnail generation is removed
 
-            # Fetch audio data
+            logger.info(f"[STEP 1.2] Fetching audio data for short_id: {short_id}")
             audio_data = self._fetch_audio_data(short_id)
+            if audio_data:
+                logger.info(f"[STEP 1.2] ✓ Audio data found: url={audio_data.get('generated_audio_url', 'N/A')[:80]}..., "
+                          f"has_subtitles={bool(audio_data.get('subtitles'))}, status={audio_data.get('status')}")
+            else:
+                logger.info(f"[STEP 1.2] ⚠ No audio data found for this short")
+            logger.info(f"[STEP 1] ✓ Completed fetching data")
 
             update_task_progress(task_id, 0.2, "Downloading videos and audio")
 
             # Step 2: Download videos and audio
+            logger.info(f"[STEP 2] Downloading videos and audio...")
+            logger.info(f"[STEP 2.1] Downloading {len(scenes_data)} video files...")
             video_files = self._download_videos(scenes_data, user_id)
             if not video_files:
                 raise Exception("Failed to download videos")
+            logger.info(f"[STEP 2.1] ✓ Successfully downloaded {len(video_files)} video files")
+            for i, video_file in enumerate(video_files, 1):
+                file_size = os.path.getsize(video_file) if os.path.exists(video_file) else 0
+                logger.info(f"[STEP 2.1]   Video {i}: {video_file} ({file_size / 1024 / 1024:.2f} MB)")
 
             audio_file = None
             if audio_data and audio_data.get('generated_audio_url'):
+                logger.info(f"[STEP 2.2] Downloading audio file...")
                 audio_file = self._download_audio(
                     audio_data['generated_audio_url'], task_id)
+                if audio_file:
+                    file_size = os.path.getsize(audio_file) if os.path.exists(audio_file) else 0
+                    logger.info(f"[STEP 2.2] ✓ Audio downloaded: {audio_file} ({file_size / 1024 / 1024:.2f} MB)")
+                else:
+                    logger.warning(f"[STEP 2.2] ⚠ Audio download returned None")
+            else:
+                logger.info(f"[STEP 2.2] ⚠ Skipping audio download (no audio URL available)")
+            logger.info(f"[STEP 2] ✓ Completed downloading files")
 
             update_task_progress(task_id, 0.4, "Merging videos and audio")
 
             # Step 3: Merge videos
+            logger.info(f"[STEP 3] Merging videos...")
+            logger.info(f"[STEP 3] Merging {len(video_files)} video files into single video...")
             merged_video_path = self._merge_videos(video_files, task_id)
             if not merged_video_path:
                 raise Exception("Failed to merge videos")
+            merged_size = os.path.getsize(merged_video_path) if os.path.exists(merged_video_path) else 0
+            logger.info(f"[STEP 3] ✓ Videos merged successfully: {merged_video_path} ({merged_size / 1024 / 1024:.2f} MB)")
 
             # Step 4: Merge audio if available
             if audio_file:
+                logger.info(f"[STEP 4] Merging audio with video...")
+                logger.info(f"[STEP 4] Combining audio file with merged video...")
                 merged_video_path = self._merge_audio_with_video(
                     merged_video_path, audio_file, task_id
                 )
+                if merged_video_path:
+                    merged_size = os.path.getsize(merged_video_path) if os.path.exists(merged_video_path) else 0
+                    logger.info(f"[STEP 4] ✓ Audio merged successfully: {merged_video_path} ({merged_size / 1024 / 1024:.2f} MB)")
+                else:
+                    logger.warning(f"[STEP 4] ⚠ Audio merge returned None")
+            else:
+                logger.info(f"[STEP 4] ⚠ Skipping audio merge (no audio file available)")
 
             update_task_progress(task_id, 0.5, "Processing final video")
 
             # Step 5: Add watermark if free plan
+            logger.info(f"[STEP 5] Processing final video (watermark, subtitles)...")
+            logger.info(f"[STEP 5.1] Checking user plan and adding watermark if needed...")
             final_video_path = self._add_watermark_if_needed(
                 merged_video_path, user_id, task_id
             )
+            if final_video_path != merged_video_path:
+                final_size = os.path.getsize(final_video_path) if os.path.exists(final_video_path) else 0
+                logger.info(f"[STEP 5.1] ✓ Watermark added: {final_video_path} ({final_size / 1024 / 1024:.2f} MB)")
+            else:
+                logger.info(f"[STEP 5.1] ✓ No watermark needed (user is not on free plan)")
 
             # Step 6: Add subtitles if available
             if audio_data and audio_data.get('subtitles'):
+                logger.info(f"[STEP 5.2] Embedding subtitles into video...")
                 try:
+                    subtitle_count = len(audio_data.get('subtitles', []))
+                    logger.info(f"[STEP 5.2] Found {subtitle_count} subtitle entries to embed")
                     final_video_path = self._embed_subtitles(
                         final_video_path, audio_data['subtitles'], task_id
                     )
+                    if final_video_path:
+                        final_size = os.path.getsize(final_video_path) if os.path.exists(final_video_path) else 0
+                        logger.info(f"[STEP 5.2] ✓ Subtitles embedded successfully: {final_video_path} ({final_size / 1024 / 1024:.2f} MB)")
+                    else:
+                        logger.warning(f"[STEP 5.2] ⚠ Subtitle embedding returned None")
                 except Exception as subtitle_error:
                     logger.warning(
-                        f"Failed to embed subtitles, continuing without them: {subtitle_error}")
+                        f"[STEP 5.2] ⚠ Failed to embed subtitles, continuing without them: {subtitle_error}")
                     # Continue with the video without subtitles
+            else:
+                logger.info(f"[STEP 5.2] ⚠ Skipping subtitles (no subtitle data available)")
+            logger.info(f"[STEP 5] ✓ Completed processing final video")
 
             update_task_progress(task_id, 0.7, "Uploading final video")
 
             # Step 7: Upload final video
+            logger.info(f"[STEP 6] Uploading final video to Supabase...")
+            final_size = os.path.getsize(final_video_path) if os.path.exists(final_video_path) else 0
+            logger.info(f"[STEP 6] Uploading video: {final_video_path} ({final_size / 1024 / 1024:.2f} MB)")
             final_video_url = self._upload_final_video(
                 final_video_path, short_id, task_id)
             if not final_video_url:
                 raise Exception("Failed to upload final video")
+            logger.info(f"[STEP 6] ✓ Final video uploaded successfully: {final_video_url}")
 
             # Update shorts table with final video URL
+            logger.info(f"[STEP 7] Updating database with final video URL...")
             self._update_shorts_final_video(short_id, final_video_url)
+            logger.info(f"[STEP 7] ✓ Database updated successfully")
 
             # Clean up temporary files
+            logger.info(f"[STEP 8] Cleaning up temporary files...")
             temp_files = video_files + [merged_video_path, final_video_path]
             if audio_file:
                 temp_files.append(audio_file)
@@ -189,28 +260,36 @@ class MergingService:
                 try:
                     # Find and clean up subtitle temp directories
                     self._cleanup_subtitle_temp_dirs()
+                    logger.info(f"[STEP 8] ✓ Subtitle temp directories cleaned")
                 except Exception as cleanup_error:
-                    logger.warning(f"Failed to cleanup subtitle temp directories: {cleanup_error}")
+                    logger.warning(f"[STEP 8] ⚠ Failed to cleanup subtitle temp directories: {cleanup_error}")
             
             self._cleanup_temp_files(temp_files)
+            logger.info(f"[STEP 8] ✓ Cleaned up {len(temp_files)} temporary files")
 
             # Complete task
+            logger.info(f"[STEP 9] Completing merge task...")
             complete_task(task_id, {
                 "final_video_url": final_video_url,
                 "short_id": short_id
             })
+            logger.info(f"[STEP 9] ✓ Task marked as completed")
 
-            logger.info(
-                f"Successfully completed finalize short task {task_id}")
+            logger.info("=" * 80)
+            logger.info(f"[MERGE FLOW] ✓ Successfully completed merge process for short_id: {short_id}")
+            logger.info(f"[MERGE FLOW] Final video URL: {final_video_url}")
+            logger.info("=" * 80)
 
         except Exception as e:
-            logger.error(
-                f"Failed to finalize short {short_id}: {e}", exc_info=True)
+            logger.error("=" * 80)
+            logger.error(f"[MERGE FLOW] ✗ Failed to finalize short {short_id}: {e}", exc_info=True)
+            logger.error("=" * 80)
             fail_task(task_id, str(e))
         finally:
             # Remove thread reference
             if task_id in self._active_threads:
                 del self._active_threads[task_id]
+                logger.info(f"[MERGE FLOW] Thread reference cleaned up for task_id: {task_id}")
 
     def _fetch_video_scenes(self, short_id: str) -> List[Dict[str, Any]]:
         """Fetch all video scenes for a short."""

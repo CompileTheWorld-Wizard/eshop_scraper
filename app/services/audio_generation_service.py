@@ -123,9 +123,12 @@ class AudioGenerationService:
             if not final_audio_result:
                 raise Exception("Failed to generate final audio")
 
+            # final_audio_url is the public URL from Supabase storage
             final_audio_url = final_audio_result["url"]
             upload_info = final_audio_result["upload_info"]
             subtitle_timing = final_audio_result.get("subtitle_timing", [])
+            
+            logger.info(f"Audio uploaded successfully. Public URL: {final_audio_url}")
             
             # Step 5: Deduct credits for successful audio generation
             credit_result = asyncio.run(self._deduct_credits_for_audio_generation(request, audio_script, request.short_id))
@@ -133,19 +136,22 @@ class AudioGenerationService:
             # Step 6: Generate SRT content from subtitle timing
             srt_content = self._generate_srt_content(subtitle_timing)
             
-            # Step 7: Get signed URL for the audio file
+            # Step 7: Get signed URL for duration calculation (signed URLs work for both public and private buckets)
             signed_audio_url = asyncio.run(self._get_signed_url_from_supabase_url(final_audio_url))
             if not signed_audio_url:
-                logger.warning("Failed to get signed URL, using public URL")
+                logger.warning("Failed to get signed URL, using public URL for duration calculation")
                 signed_audio_url = final_audio_url
 
-            # Step 8: Calculate duration
+            # Step 8: Calculate duration using signed URL
             duration = asyncio.run(self._calculate_audio_duration(signed_audio_url))
             logger.info(f"Actual audio duration: {duration:.2f} seconds (target: {scenario.total_duration} seconds, difference: {duration - scenario.total_duration:.2f}s)")
             
-            # Step 9: Save to Supabase audio_info table (including subtitles)
+            # Step 9: Save to Supabase audio_info table with PUBLIC URL (not signed URL)
+            # The public URL is stable and doesn't expire, so it's stored in the database
+            # Signed URLs are generated on-demand during merge/download phase
+            logger.info(f"Saving public URL to database: {final_audio_url}")
             asyncio.run(self._save_audio_to_supabase_audio_info(
-                request, signed_audio_url, audio_script, words_per_minute, 
+                request, final_audio_url, audio_script, words_per_minute, 
                 duration, upload_info, credit_result, srt_content, subtitle_timing
             ))
 
@@ -1080,11 +1086,20 @@ Description: {scenario.description}"""
             if credit_result and credit_result.get("new_balance") is not None:
                 metadata["newBalance"] = credit_result.get("new_balance")
             
+            # Validate that audio_url is a public URL (should contain /storage/v1/object/public/)
+            if '/storage/v1/object/public/' not in audio_url:
+                logger.warning(
+                    f"Audio URL does not appear to be a public URL format. "
+                    f"Expected format: .../storage/v1/object/public/bucket/path, got: {audio_url[:100]}..."
+                )
+            else:
+                logger.info(f"Saving public URL to PostgreSQL audio_info table: {audio_url[:100]}...")
+            
             audio_data = {
                 "user_id": request.user_id,
                 "short_id": request.short_id,
                 "voice_id": request.voice_id,
-                "generated_audio_url": audio_url,
+                "generated_audio_url": audio_url,  # Public URL stored in database
                 "status": "completed",
                 "metadata": metadata,
                 "subtitles": subtitles if subtitles else []
