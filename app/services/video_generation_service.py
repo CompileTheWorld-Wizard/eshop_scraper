@@ -1104,9 +1104,9 @@ class VideoGenerationService:
                     if "Bucket not found" in str(bucket_error):
                         logger.warning("Bucket 'video-files' not found, trying to create it...")
                         try:
-                            # Try to create the bucket
-                            supabase_manager.client.storage.create_bucket('video-files', options={"public": False})
-                            logger.info("Created 'video-files' bucket")
+                            # Try to create the bucket as public since we're using public URLs
+                            supabase_manager.client.storage.create_bucket('video-files', options={"public": True})
+                            logger.info("Created 'video-files' bucket as public")
                             # Retry upload
                             result = supabase_manager.client.storage.from_('video-files').upload(
                                 path=filename,
@@ -1203,9 +1203,9 @@ class VideoGenerationService:
                     if "Bucket not found" in str(bucket_error):
                         logger.warning("Bucket 'video-files' not found, trying to create it...")
                         try:
-                            # Try to create the bucket
-                            supabase_manager.client.storage.create_bucket('video-files', options={"public": False})
-                            logger.info("Created 'video-files' bucket")
+                            # Try to create the bucket as public since we're using public URLs
+                            supabase_manager.client.storage.create_bucket('video-files', options={"public": True})
+                            logger.info("Created 'video-files' bucket as public")
                             # Retry upload
                             result = supabase_manager.client.storage.from_('video-files').upload(
                                 path=filename,

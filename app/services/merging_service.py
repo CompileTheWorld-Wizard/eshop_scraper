@@ -451,34 +451,43 @@ class MergingService:
                     bucket_name, file_path = bucket_path.split('/', 1)
 
                     # Create signed URL with 1 hour expiration
-                    signed_url_response = supabase_manager.client.storage.from_(bucket_name).create_signed_url(
-                        file_path, 3600
-                    )
+                    # Note: If bucket is private, public URLs won't work, so we need signed URLs
+                    try:
+                        signed_url_response = supabase_manager.client.storage.from_(bucket_name).create_signed_url(
+                            file_path, 3600
+                        )
 
-                    # Extract the signed URL string from the response
-                    if isinstance(signed_url_response, dict):
-                        if 'signedURL' in signed_url_response:
-                            signed_url = signed_url_response['signedURL']
-                        elif 'signedUrl' in signed_url_response:
-                            signed_url = signed_url_response['signedUrl']
-                        else:
-                            # Try to find any URL-like property
-                            for key, value in signed_url_response.items():
-                                if isinstance(value, str) and value.startswith('http'):
-                                    signed_url = value
-                                    break
+                        # Extract the signed URL string from the response
+                        if isinstance(signed_url_response, dict):
+                            if 'signedURL' in signed_url_response:
+                                signed_url = signed_url_response['signedURL']
+                            elif 'signedUrl' in signed_url_response:
+                                signed_url = signed_url_response['signedUrl']
                             else:
-                                logger.warning(
-                                    f"Could not find signed URL in response: {signed_url_response}")
-                                return video_url  # Fallback to original URL
-                    elif isinstance(signed_url_response, str):
-                        signed_url = signed_url_response
-                    else:
-                        signed_url = str(signed_url_response)
+                                # Try to find any URL-like property
+                                for key, value in signed_url_response.items():
+                                    if isinstance(value, str) and value.startswith('http'):
+                                        signed_url = value
+                                        break
+                                else:
+                                    logger.error(
+                                        f"Could not find signed URL in response: {signed_url_response}")
+                                    raise Exception(f"Invalid signed URL response format: {signed_url_response}")
+                        elif isinstance(signed_url_response, str):
+                            signed_url = signed_url_response
+                        else:
+                            signed_url = str(signed_url_response)
 
-                    logger.info(
-                        f"Created signed URL for video file in bucket {bucket_name}")
-                    return signed_url
+                        logger.info(
+                            f"Created signed URL for video file in bucket {bucket_name}, path: {file_path}")
+                        return signed_url
+                    except Exception as sign_error:
+                        logger.error(
+                            f"Failed to create signed URL for bucket {bucket_name}, path {file_path}: {sign_error}")
+                        # If signed URL creation fails, try using the public URL directly
+                        # (this will only work if bucket is public)
+                        logger.warning(f"Falling back to public URL (will only work if bucket is public)")
+                        return video_url
 
             # Also check for URLs that might be direct Supabase URLs without the public pattern
             elif 'supabase.co' in video_url and '/storage/' in video_url:
