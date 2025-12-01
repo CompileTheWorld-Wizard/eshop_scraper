@@ -1116,17 +1116,16 @@ class MergingService:
             # 1. Take video (with its sound effects) as input 0
             # 2. Take voice script audio as input 1
             # 3. Mix both audio streams using amix filter with volume adjustments
-            # 4. Ensure the output duration matches the longest input duration
+            # 4. Ensure the output duration matches the longest input duration (using duration=longest in filter)
             cmd = [
                 'ffmpeg', '-y',
                 '-i', video_path,      # Input 0: video with sound effects
                 '-i', audio_path,      # Input 1: voice script audio
                 '-c:v', 'copy',        # Copy video codec without re-encoding
-                '-filter_complex', f'[0:a]volume=0.3[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',  # Mix with volume adjustments
+                '-filter_complex', f'[0:a]volume=0.3[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',  # Mix with volume adjustments, duration=longest ensures output matches longest input
                 '-map', '0:v',         # Map video from first input
                 '-map', '[out]',       # Map the mixed audio output
                 '-c:a', 'aac',         # Convert mixed audio to AAC
-                '-longest',            # End when longest input ends
                 merged_path
             ]
 
@@ -1217,16 +1216,16 @@ class MergingService:
 
             # Voice-priority approach: prioritize voice script over video audio
             # This method tries to mix but gives priority to the voice script
+            # duration=longest ensures output matches longest input (video or audio)
             cmd = [
                 'ffmpeg', '-y',
                 '-i', video_path,      # Input 0: video with sound effects
                 '-i', audio_path,      # Input 1: voice script audio
                 '-c:v', 'copy',        # Copy video codec
-                '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',  # Mix with voice priority
+                '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',  # Mix with voice priority, duration=longest ensures output matches longest input
                 '-map', '0:v',         # Map video from first input
                 '-map', '[out]',       # Map the mixed audio output
                 '-c:a', 'aac',         # Convert mixed audio to AAC
-                '-longest',            # End when longest input ends
                 merged_path
             ]
 
@@ -1261,6 +1260,7 @@ class MergingService:
 
             # Most basic approach: just replace video audio with voice script
             # This is the original behavior but with better error handling
+            # FFmpeg will automatically match the longest stream duration (default behavior)
             cmd = [
                 'ffmpeg', '-y',
                 '-i', video_path,
@@ -1269,7 +1269,6 @@ class MergingService:
                 '-c:a', 'aac',         # Convert audio to AAC
                 '-map', '0:v',         # Map video from first input
                 '-map', '1:a',         # Map audio from second input (voice script)
-                '-longest',            # End when longest input ends
                 merged_path
             ]
 
