@@ -1118,9 +1118,10 @@ class VideoGenerationService:
                     else:
                         raise bucket_error
                 
-                # Build a stable, original storage URL (without signing) for database storage.
-                # We do NOT want to store a signed URL with an expiring token in the database.
-                public_url = f"{settings.SUPABASE_URL}/storage/v1/object/video-files/{filename}"
+                # Build a stable, public storage URL (without signing) for database storage.
+                # Use the /public/ path so other services (like merging) can treat this as a true public URL.
+                # We do NOT store a signed URL with an expiring token in the database.
+                public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/video-files/{filename}"
                 
                 # Get signed URL for immediate access
                 signed_url_response = supabase_manager.client.storage.from_('video-files').create_signed_url(
@@ -1325,6 +1326,9 @@ class VideoGenerationService:
         try:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
+            
+            # Log the video URL being stored for debugging
+            logger.info(f"Saving scene URLs for scene_id={scene_id}: image_url={image_url}, video_url={video_url}")
             
             # Update scene with new URLs (video_url is the public URL for database storage)
             result = supabase_manager.client.table('video_scenes').update({
