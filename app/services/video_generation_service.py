@@ -1121,7 +1121,9 @@ class VideoGenerationService:
                 # Build a stable, public storage URL (without signing) for database storage.
                 # Use the /public/ path so other services (like merging) can treat this as a true public URL.
                 # We do NOT store a signed URL with an expiring token in the database.
-                public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/video-files/{filename}"
+                # Remove 'video-files/' prefix from filename since bucket name is already in the URL path
+                file_path = filename.replace('video-files/', '', 1) if filename.startswith('video-files/') else filename
+                public_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/video-files/{file_path}"
                 
                 # Get signed URL for immediate access
                 signed_url_response = supabase_manager.client.storage.from_('video-files').create_signed_url(
@@ -1217,7 +1219,9 @@ class VideoGenerationService:
                 
                 # Build a stable, original storage URL (without signing) for database storage.
                 # We do NOT want to store a signed URL with an expiring token in the database.
-                public_url = f"{settings.SUPABASE_URL}/storage/v1/object/video-files/{filename}"
+                # Remove 'video-files/' prefix from filename since bucket name is already in the URL path
+                file_path = filename.replace('video-files/', '', 1) if filename.startswith('video-files/') else filename
+                public_url = f"{settings.SUPABASE_URL}/storage/v1/object/video-files/{file_path}"
                 
                 # Get signed URL for immediate access
                 signed_url_response = supabase_manager.client.storage.from_('video-files').create_signed_url(
