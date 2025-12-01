@@ -14,18 +14,6 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timezone
 from elevenlabs import ElevenLabs
 
-import subprocess
-import json
-from io import BytesIO
-
-try:
-    from pydub import AudioSegment
-    PYDUB_AVAILABLE = True
-except (ImportError, ModuleNotFoundError):
-    # pydub may not be available or may have dependency issues (e.g., audioop removed in Python 3.13+)
-    PYDUB_AVAILABLE = False
-    AudioSegment = None  # Set to None to avoid NameError
-
 from app.models import (
     AudioGenerationRequest, AudioGenerationResponse, GeneratedScenario
 )
@@ -35,10 +23,6 @@ from app.config import settings
 from app.logging_config import get_logger
 
 logger = get_logger(__name__)
-
-# Log pydub availability status after logger is initialized
-if not PYDUB_AVAILABLE:
-    logger.warning("pydub not available. Audio duration calculation from text will use fallback method.")
 
 
 class AudioGenerationService:
@@ -126,7 +110,7 @@ class AudioGenerationService:
 
             # Step 3: Generate audio script using OpenAI
             logger.info("Generating audio script...")
-            audio_script = asyncio.run(self._generate_audio_script(scenario, request.voice_id, words_per_minute, test_text, test_audio_duration))
+            audio_script = asyncio.run(self._generate_audio_script(scenario, words_per_minute, test_text, test_audio_duration))
             if not audio_script:
                 raise Exception("Failed to generate audio script")
 
@@ -387,31 +371,12 @@ class AudioGenerationService:
                     logger.info(f"Found scenario data in table: video_scenarios")
                     
                     # Convert to GeneratedScenario object
-                    # Handle both total_duration and estimated_duration column names
-                    duration = scenario_data.get('total_duration') or scenario_data.get('estimated_duration')
-                    if duration is None:
-                        duration = 21.5  # Default to 21.5 seconds (middle of 20-23s range) for audio generation
-                        logger.warning(f"No duration found in database for scenario, defaulting to 21.5 seconds (target range: 20-23s)")
-                    else:
-                        # Target range is 20-23 seconds for audio generation
-                        if duration > 23:
-                            logger.warning(f"Database duration ({duration}s) is greater than 23s, capping to 23s for audio generation")
-                            duration = 23
-                        elif duration < 20:
-                            logger.warning(f"Database duration ({duration}s) is less than 20s, using 21.5s for audio generation (target range: 20-23s)")
-                            duration = 21.5
-                        else:
-                            # Duration is in 20-23s range, use it as-is
-                            logger.info(f"Database duration ({duration}s) is within target range (20-23s)")
-                    
-                    logger.info(f"Using duration: {duration}s for audio generation")
-                    
                     return GeneratedScenario(
                         title=scenario_data.get('title', f'Short {short_id[:8]}'),
                         description=scenario_data.get('description', 'Product showcase video'),
                         detected_demographics=None,
                         scenes=[],
-                        total_duration=duration,
+                        total_duration=scenario_data.get('total_duration', 30),
                         style=scenario_data.get('style', 'trendy-influencer-vlog'),
                         mood=scenario_data.get('mood', 'energetic'),
                         resolution=scenario_data.get('resolution', '1080x1920'),
@@ -432,520 +397,62 @@ class AudioGenerationService:
             logger.error(f"Failed to get scenario for short_id {short_id}: {e}")
             return None
 
-    async def _calculate_audio_duration_from_text(self, text: str, voice_id: str) -> float:
-        """
-        Generate audio in memory using TTS and return its duration in seconds.
-        
-        Args:
-            text: The text to convert to audio
-            voice_id: ElevenLabs voice ID to use for generation
-            
-        Returns:
-            Duration in seconds, or 0.0 on error
-        """
-        try:
-            if not self.elevenlabs_client:
-                logger.error("ElevenLabs client not initialized")
-                return 0.0
 
-            # Generate audio using ElevenLabs
-            audio_generator = self.elevenlabs_client.text_to_speech.convert(
-                voice_id=voice_id,
-                output_format=settings.ELEVENLABS_DEFAULT_OUTPUT_FORMAT,
-                text=text,
-                model_id=settings.ELEVENLABS_DEFAULT_MODEL
-            )
-
-            # Convert generator to bytes
-            audio_bytes = b''.join(audio_generator)
-
-            # Use pydub to measure duration if available
-            if PYDUB_AVAILABLE:
-                try:
-                    audio_segment = AudioSegment.from_file(BytesIO(audio_bytes), format="mp3")
-                    duration = len(audio_segment) / 1000.0  # duration in seconds
-                    logger.info(f"Calculated audio duration from text: {duration:.2f}s")
-                    return duration
-                except Exception as e:
-                    logger.warning(f"Failed to parse audio with pydub: {e}, using fallback method")
-            
-            # Fallback: estimate duration based on file size and bitrate
-            file_size_bytes = len(audio_bytes)
-            estimated_bitrate_kbps = 128  # MP3 at 128 kbps
-            bytes_per_second = (estimated_bitrate_kbps * 1000) / 8
-            estimated_duration = file_size_bytes / bytes_per_second
-            logger.info(f"Estimated audio duration (fallback): {estimated_duration:.2f}s")
-            return estimated_duration
-
-        except Exception as e:
-            logger.error(f"Error calculating audio duration from text: {e}")
-            return 0.0
-
-    def _split_script_into_segments(self, script: str) -> List[str]:
-        """
-        Split script into 4 logical segments at natural sentence boundaries.
-        
-        Returns:
-            List of 4 segment texts: [hook, main1, main2, cta]
-        """
-        try:
-            # Split script into sentences
-            sentences = script.replace('!', '.').replace('?', '.').split('.')
-            sentences = [s.strip() for s in sentences if s.strip()]
-            
-            if len(sentences) < 4:
-                # If not enough sentences, split by commas or just divide evenly
-                words = script.split()
-                chunk_size = len(words) // 4
-                segments = []
-                for i in range(4):
-                    start = i * chunk_size
-                    end = (i + 1) * chunk_size if i < 3 else len(words)
-                    segments.append(' '.join(words[start:end]))
-                return segments
-            
-            # Distribute sentences across 4 segments
-            total_sentences = len(sentences)
-            hook_count = max(1, total_sentences // 10)  # ~10% for hook
-            cta_count = max(1, total_sentences // 10)  # ~10% for CTA
-            main_count = total_sentences - hook_count - cta_count
-            main1_count = main_count // 2
-            main2_count = main_count - main1_count
-            
-            segments = [
-                '. '.join(sentences[:hook_count]) + '.',  # Hook
-                '. '.join(sentences[hook_count:hook_count + main1_count]) + '.',  # Main 1
-                '. '.join(sentences[hook_count + main1_count:hook_count + main1_count + main2_count]) + '.',  # Main 2
-                '. '.join(sentences[hook_count + main1_count + main2_count:]) + '.'  # CTA
-            ]
-            
-            # Clean up empty segments
-            segments = [s.strip() for s in segments if s.strip()]
-            
-            # Ensure we have 4 segments
-            while len(segments) < 4:
-                segments.append("")
-            
-            logger.info(f"Split script into {len(segments)} segments")
-            return segments[:4]
-            
-        except Exception as e:
-            logger.error(f"Error splitting script: {e}")
-            # Fallback: split by word count
-            words = script.split()
-            chunk_size = len(words) // 4
-            return [
-                ' '.join(words[:chunk_size]),
-                ' '.join(words[chunk_size:chunk_size*2]),
-                ' '.join(words[chunk_size*2:chunk_size*3]),
-                ' '.join(words[chunk_size*3:])
-            ]
-
-    async def _generate_segment_audio_bytes(self, segment_text: str, voice_id: str) -> Optional[bytes]:
-        """
-        Generate audio bytes for a single segment.
-        
-        Returns:
-            Audio bytes or None on error
-        """
-        try:
-            if not self.elevenlabs_client:
-                logger.error("ElevenLabs client not initialized")
-                return None
-            
-            if not segment_text.strip():
-                logger.warning("Empty segment text, skipping audio generation")
-                return None
-            
-            audio_generator = self.elevenlabs_client.text_to_speech.convert(
-                voice_id=voice_id,
-                output_format=settings.ELEVENLABS_DEFAULT_OUTPUT_FORMAT,
-                text=segment_text,
-                model_id=settings.ELEVENLABS_DEFAULT_MODEL
-            )
-            
-            audio_bytes = b''.join(audio_generator)
-            return audio_bytes
-            
-        except Exception as e:
-            logger.error(f"Error generating segment audio: {e}")
-            return None
-
-    async def _generate_final_segment_to_duration(
-        self, 
-        remaining_time: float, 
-        context: str, 
-        scenario: GeneratedScenario,
-        wps: float,
-        voice_id: str,
-        max_retries: int = 3
-    ) -> Optional[str]:
-        """
-        Generate CTA segment that fills exactly the remaining time.
-        
-        Args:
-            remaining_time: Target duration in seconds for this segment
-            context: Previous segments text for context
-            scenario: Scenario information
-            wps: Words per second
-            voice_id: Voice ID for duration measurement
-            max_retries: Maximum retries to get exact duration
-            
-        Returns:
-            CTA segment text or None on error
-        """
+    async def _generate_audio_script(self, scenario: GeneratedScenario, words_per_minute: float, test_text: str = "", test_audio_duration: float = 0) -> Optional[str]:
+        """Generate audio script using OpenAI based on scenario and speed"""
         try:
             if not self.openai_client:
                 logger.error("OpenAI client not initialized")
                 return None
             
-            required_words = round(remaining_time * wps)
-            logger.info(f"Generating final segment for {remaining_time:.2f}s ({required_words} words)")
-            
-            for attempt in range(1, max_retries + 1):
-                system_message = f"""
-You are an expert copywriter writing call-to-action (CTA) segments for promotional videos.
+            system_message = f"""You are an expert copywriter for social media product promotion videos.
+Create a clean, spoken audio script with NO stage directions, music cues, emojis, or brackets.
 
-Write a natural, compelling CTA that encourages action.
-
-REQUIREMENTS:
-- The CTA MUST contain exactly {required_words} words
-- It must fill exactly {remaining_time:.2f} seconds when spoken
-- Style: {scenario.style}
-- Mood: {scenario.mood}
-- Make it persuasive and action-oriented
-- No emojis, brackets, or stage directions
-- Only natural spoken sentences
-
-OUTPUT:
-Return ONLY the CTA text, exactly {required_words} words.
-"""
-
-                user_message = f"""
-Product: {scenario.title}
-Description: {scenario.description}
-
-Previous content context: {context[:200]}...
-
-Generate a call-to-action segment with exactly {required_words} words that will take {remaining_time:.2f} seconds to speak.
-"""
-
-                response = self.openai_client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=[
-                        {"role": "system", "content": system_message},
-                        {"role": "user", "content": user_message}
-                    ],
-                    max_tokens=200,
-                    temperature=0.5
-                )
-                
-                if not (response.choices and response.choices[0].message.content):
-                    logger.error("No response from GPT for final segment")
-                    return None
-                
-                cta_text = response.choices[0].message.content.strip()
-                word_count = len(cta_text.split())
-                
-                # Measure actual duration
-                actual_duration = await self._calculate_audio_duration_from_text(cta_text, voice_id)
-                logger.info(f"Final segment attempt {attempt}: {word_count} words, {actual_duration:.2f}s (target: {remaining_time:.2f}s)")
-                
-                # Check if duration matches
-                if abs(actual_duration - remaining_time) < 0.2:
-                    logger.info(f"Final segment matches target duration!")
-                    return cta_text
-                
-                # Adjust for next attempt
-                if attempt < max_retries:
-                    adjustment_ratio = remaining_time / actual_duration if actual_duration > 0 else 1.0
-                    required_words = max(5, round(word_count * adjustment_ratio))
-                    logger.info(f"Adjusting final segment words to {required_words} for next attempt")
-            
-            # Return best attempt even if not perfect
-            logger.warning(f"Final segment duration not exact, using best attempt")
-            return cta_text
-            
-        except Exception as e:
-            logger.error(f"Error generating final segment: {e}")
-            return None
-
-    def _concatenate_audio_segments(self, audio_segments: List[bytes]) -> Optional[bytes]:
-        """
-        Concatenate multiple audio segments into a single audio file.
-        
-        Args:
-            audio_segments: List of audio byte arrays
-            
-        Returns:
-            Concatenated audio bytes or None on error
-        """
-        try:
-            if not audio_segments:
-                logger.error("No audio segments to concatenate")
-                return None
-            
-            if PYDUB_AVAILABLE:
-                try:
-                    # Use pydub for concatenation
-                    combined = AudioSegment.empty()
-                    for i, segment_bytes in enumerate(audio_segments):
-                        if segment_bytes:
-                            segment = AudioSegment.from_file(BytesIO(segment_bytes), format="mp3")
-                            combined += segment
-                            # Add tiny pause between segments (0.1s) for natural flow
-                            if i < len(audio_segments) - 1:
-                                combined += AudioSegment.silent(duration=100)  # 100ms pause
-                    
-                    # Export to bytes
-                    output = BytesIO()
-                    combined.export(output, format="mp3")
-                    logger.info(f"Concatenated {len(audio_segments)} audio segments using pydub")
-                    return output.getvalue()
-                    
-                except Exception as e:
-                    logger.warning(f"Failed to concatenate with pydub: {e}, using simple join")
-            
-            # Fallback: simple byte concatenation (may not work perfectly for MP3)
-            # This is a basic fallback - proper concatenation needs pydub or ffmpeg
-            logger.warning("pydub not available, using simple byte concatenation (may cause audio issues)")
-            return b''.join(audio_segments)
-            
-        except Exception as e:
-            logger.error(f"Error concatenating audio segments: {e}")
-            return None
-
-    async def _generate_audio_script(
-        self,
-        scenario: GeneratedScenario,
-        voice_id: str,
-        words_per_minute: float,
-        test_text: str = "",
-        test_audio_duration: float = 0,
-        max_retries: int = 5
-    ) -> Optional[str]:
-        """
-        Generate a spoken script that matches target audio duration for TTS.
-        Uses segmentation approach: split into segments, measure each, adjust final segment.
-        """
-        try:
-            if not self.openai_client:
-                logger.error("OpenAI client not initialized")
-                return None
-
-            # --- Step 1: calibrate words per second ---
-            if test_text and test_audio_duration > 0:
-                wps = len(test_text.split()) / test_audio_duration
-                logger.info(f"Calibrated WPS from test audio: {wps:.3f}")
-            else:
-                wps = words_per_minute / 60
-                logger.info(f"Using default WPS from WPM: {wps:.3f}")
-            
-            # Ensure minimum WPS to avoid too few words (safety check)
-            if wps < 1.5:
-                logger.warning(f"WPS ({wps:.3f}) is too low, using minimum 2.0 WPS for better accuracy")
-                wps = 2.0
-
-            logger.info(f"Using segmentation approach for {scenario.total_duration}s target audio")
-            
-            # --- Step 2: Generate initial full script ---
-            # Target range is 20-23s, aim for middle (21.5s) to have room for adjustment
-            # If target is in range, use it; otherwise target 21.5s
-            if 20 <= scenario.total_duration <= 23:
-                target_duration = scenario.total_duration
-            else:
-                target_duration = 21.5  # Default to middle of range
-            
-            # Target slightly under to ensure we stay within 20-23s range
-            conservative_target = target_duration - 0.3  # Target 0.3s under to ensure within range
-            target_words = round(conservative_target * wps)
-            # Ensure minimum words for 20s+ target
-            if target_duration >= 20 and target_words < 35:
-                target_words = 35
-            
-            logger.info(f"Generating initial script with {target_words} words...")
-            
-            system_message = f"""
-You are an expert voiceover scriptwriter.
-
-Write a natural, conversational spoken script for a promotional video.
+SCRIPT STRUCTURE (3 parts):
+1. HOOK (2-3 seconds): Start with a fun, intriguing, or relatable question or statement that grabs attention immediately.
+2. MAIN (80% of script): Present product features and benefits, speaking in a friendly, conversational tone. Use natural speech patterns, like laughter, pauses, or excitement when appropriate. Focus on how the product makes life easier or more enjoyable.
+3. CTA (2-3 seconds): Clear call-to-action that’s casual but persuasive. Encourage the listener to take action with a friendly prompt or playful invitation.
 
 REQUIREMENTS:
-- The script should contain approximately {target_words} words
+- Duration: {scenario.total_duration} seconds
 - Style: {scenario.style}
 - Mood: {scenario.mood}
-- Structure: Hook (opening), Main content (product features/benefits), CTA (call-to-action)
-- Only natural spoken sentences, no emojis, brackets, or stage directions
+- Write ONLY what will be spoken - no [music cues], no emojis, no stage directions
+- Keep it natural, conversational, and engaging
+- Focus on product benefits and creating desire
 
-OUTPUT:
-Return ONLY the spoken script text.
-"""
+VOICE CALIBRATION:
+This voice speaks at {words_per_minute:.1f} words per minute.
+Example: "{test_text}" took {test_audio_duration:.2f} seconds to speak.
 
-            user_message = f"""
-Product:
+OUTPUT FORMAT: Return only the clean spoken script without any formatting, labels, or non-spoken elements."""
+
+            user_message = f"""Create a promotional audio script for this product:
+
 Title: {scenario.title}
-Description: {scenario.description}
+Description: {scenario.description}"""
 
-Generate a spoken script with approximately {target_words} words.
-"""
-
+            logger.info("Sending request to OpenAI for script generation...")
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": user_message}
                 ],
-                max_tokens=1000,
-                temperature=0.5
+                max_tokens=500,
+                temperature=0.7
             )
-            
-            if not (response.choices and response.choices[0].message.content):
-                logger.error("No response from GPT for initial script")
-                return None
-            
-            full_script = response.choices[0].message.content.strip()
-            logger.info(f"Generated initial script: {len(full_script.split())} words")
-            
-            # --- Step 3: Split script into segments ---
-            segments = self._split_script_into_segments(full_script)
-            if len(segments) < 4:
-                logger.error("Failed to split script into 4 segments")
-                return None
-            
-            segment1_text, segment2_text, segment3_text, _ = segments
-            logger.info(f"Split script into segments: {len(segment1_text.split())}, {len(segment2_text.split())}, {len(segment3_text.split())} words")
-            
-            # --- Step 4: Generate and measure first 3 segments ---
-            logger.info("Generating and measuring segment 1 (Hook)...")
-            segment1_duration = await self._calculate_audio_duration_from_text(segment1_text, voice_id)
-            logger.info(f"Segment 1 duration: {segment1_duration:.2f}s")
-            
-            logger.info("Generating and measuring segment 2 (Main Part 1)...")
-            segment2_duration = await self._calculate_audio_duration_from_text(segment2_text, voice_id)
-            logger.info(f"Segment 2 duration: {segment2_duration:.2f}s")
-            
-            logger.info("Generating and measuring segment 3 (Main Part 2)...")
-            segment3_duration = await self._calculate_audio_duration_from_text(segment3_text, voice_id)
-            logger.info(f"Segment 3 duration: {segment3_duration:.2f}s")
-            
-            # --- Step 5: Calculate remaining time for final segment ---
-            total_so_far = segment1_duration + segment2_duration + segment3_duration
-            
-            # Target range is 20-23s
-            min_target = 20.0  # Minimum acceptable duration
-            max_target = 23.0  # Maximum acceptable duration
-            ideal_target = 21.5  # Ideal target (middle of range)
-            
-            # Determine target based on what we have so far
-            if total_so_far < min_target - 2.0:  # If we're way under, target upper range
-                target_duration = min(ideal_target + 1.0, max_target - 0.5)
-            elif total_so_far > max_target - 2.0:  # If we're close to max, target lower range
-                target_duration = max(ideal_target - 1.0, min_target + 0.5)
-            else:
-                # We're in good range, target ideal
-                target_duration = ideal_target
-            
-            remaining_time = target_duration - total_so_far
-            
-            logger.info(f"Total duration so far: {total_so_far:.2f}s, target: {target_duration:.2f}s (range: 20-23s), remaining: {remaining_time:.2f}s")
-            
-            # If segments 1-3 are already too long (over 22s), we need to reduce them
-            if total_so_far >= max_target - 1.0:
-                logger.warning(f"Segments 1-3 ({total_so_far:.2f}s) are too long, reducing to fit 20-23s range")
-                # Calculate reduction needed to fit in range
-                excess = total_so_far - (max_target - 2.0)  # Reduce to leave 2s for CTA
-                # Reduce proportionally from segments 2 and 3 (keep hook short)
-                reduction_ratio = (total_so_far - excess) / total_so_far if total_so_far > 0 else 0.85
-                segment2_duration *= reduction_ratio
-                segment3_duration *= reduction_ratio
-                total_so_far = segment1_duration + segment2_duration + segment3_duration
-                remaining_time = target_duration - total_so_far
-                logger.info(f"Adjusted segments: total now {total_so_far:.2f}s, remaining: {remaining_time:.2f}s")
-            
-            # If remaining time is too short, adjust target
-            if remaining_time < 1.0:
-                logger.warning(f"Remaining time ({remaining_time:.2f}s) is too short, adjusting target")
-                # Increase target slightly to allow for CTA
-                target_duration = min(max_target, total_so_far + 2.0)
-                remaining_time = target_duration - total_so_far
-            
-            # If remaining time is too long, adjust target
-            if remaining_time > 5.0:
-                logger.info(f"Remaining time ({remaining_time:.2f}s) is long, will target upper range")
-                target_duration = min(max_target - 0.3, total_so_far + 4.0)
-                remaining_time = target_duration - total_so_far
-            
-            # Target slightly less than remaining to ensure we stay within 20-23s range
-            conservative_remaining = remaining_time - 0.2  # Target 0.2s less to ensure within range
-            logger.info(f"Generating final segment for {conservative_remaining:.2f}s (target range: 20-23s)")
-            
-            # --- Step 6: Generate final segment (CTA) to exact duration ---
-            context = f"{segment1_text} {segment2_text} {segment3_text}"
-            segment4_text = await self._generate_final_segment_to_duration(
-                conservative_remaining, context, scenario, wps, voice_id
-            )
-            
-            if not segment4_text:
-                logger.error("Failed to generate final segment")
-                return None
-            
-            # --- Step 7: Combine all segments into final script ---
-            final_script = f"{segment1_text} {segment2_text} {segment3_text} {segment4_text}"
-            
-            # Verify total duration
-            final_duration = await self._calculate_audio_duration_from_text(final_script, voice_id)
-            min_target = 20.0
-            max_target = 23.0
-            
-            logger.info(f"Final script duration: {final_duration:.2f}s (target range: {min_target}-{max_target}s)")
-            
-            # Accept if within 20-23s range
-            if min_target <= final_duration <= max_target:
-                logger.info(f"Script is within target range! ({final_duration:.2f}s)")
-                return final_script
-            elif final_duration < min_target:
-                # Too short - try to extend segment 4 slightly
-                if final_duration >= min_target - 0.5:  # Within 0.5s is acceptable
-                    logger.warning(f"Script is slightly short ({final_duration:.2f}s), but acceptable")
-                    return final_script
-                else:
-                    logger.warning(f"Script is too short ({final_duration:.2f}s < {min_target}s), but returning")
-                    return final_script
-            else:
-                # Too long (> 23s) - try to reduce by shortening segment 4
-                logger.warning(f"Script is too long ({final_duration:.2f}s > {max_target}s), attempting to reduce")
-                excess = final_duration - max_target
-                # Calculate how much to reduce segment 4
-                segment4_current_duration = await self._calculate_audio_duration_from_text(segment4_text, voice_id)
-                segment4_target_duration = max(0.5, segment4_current_duration - excess - 0.3)  # Reduce by excess + 0.3s buffer
-                
-                logger.info(f"Reducing segment 4 from {segment4_current_duration:.2f}s to {segment4_target_duration:.2f}s")
-                
-                # Regenerate shorter segment 4
-                if segment4_target_duration > 0.5:
-                    segment4_text_reduced = await self._generate_final_segment_to_duration(
-                        segment4_target_duration, context, scenario, wps, voice_id
-                    )
-                    if segment4_text_reduced:
-                        final_script = f"{segment1_text} {segment2_text} {segment3_text} {segment4_text_reduced}"
-                        final_duration = await self._calculate_audio_duration_from_text(final_script, voice_id)
-                        logger.info(f"Reduced script duration: {final_duration:.2f}s")
-                
-                # Check if now within range
-                if min_target <= final_duration <= max_target:
-                    logger.info(f"Successfully reduced to within target range! ({final_duration:.2f}s)")
-                    return final_script
-                elif final_duration < max_target:
-                    logger.info(f"Reduced to under max target ({final_duration:.2f}s < {max_target}s)")
-                    return final_script
-                else:
-                    logger.warning(f"Could not reduce enough, returning best attempt ({final_duration:.2f}s)")
-                    return final_script
 
-        except Exception as e:
-            logger.error(f"Error generating audio script: {e}")
+            if response.choices and response.choices[0].message.content:
+                script = response.choices[0].message.content.strip()
+                logger.info(f"Generated audio script: {len(script)} characters")
+                return script
+
             return None
 
+        except Exception as e:
+            logger.error(f"Failed to generate audio script: {e}")
+            return None
 
 
     async def _generate_final_audio_with_info(self, voice_id: str, script: str, user_id: str) -> Optional[Dict[str, Any]]:
