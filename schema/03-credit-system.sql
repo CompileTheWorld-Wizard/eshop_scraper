@@ -108,5 +108,25 @@ CREATE TRIGGER update_credit_usage_tracking_updated_at
     FOR EACH ROW 
     EXECUTE FUNCTION update_updated_at_column();
 
+-- Credit adjustments (admin adjustments with audit trail)
+CREATE TABLE IF NOT EXISTS public.credit_adjustments (
+    id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
+    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE NOT NULL,
+    admin_id UUID REFERENCES auth.users(id) ON DELETE SET NULL NOT NULL,
+    adjustment_amount INTEGER NOT NULL, -- Can be positive or negative
+    reason TEXT, -- Optional reason for adjustment
+    description TEXT, -- Optional detailed description
+    notification_sent BOOLEAN DEFAULT false,
+    notification_sent_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Indexes for credit_adjustments table
+CREATE INDEX IF NOT EXISTS idx_credit_adjustments_user_id ON public.credit_adjustments(user_id);
+CREATE INDEX IF NOT EXISTS idx_credit_adjustments_admin_id ON public.credit_adjustments(admin_id);
+CREATE INDEX IF NOT EXISTS idx_credit_adjustments_created_at ON public.credit_adjustments(created_at);
+CREATE INDEX IF NOT EXISTS idx_credit_adjustments_notification_sent ON public.credit_adjustments(notification_sent);
+
 -- Add comment to document the new credit system
-COMMENT ON TABLE public.credit_actions IS 'Credit costs: Audio=2, Video=25, Image=2, Scraping=1, Scenario=2. Updated 2024-12-19: Removed upscale_video action and updated generate_image description for Vertex AI/Flux API'; 
+COMMENT ON TABLE public.credit_actions IS 'Credit costs: Audio=2, Video=25, Image=2, Scraping=1, Scenario=2, Upscale=5 per second';
+COMMENT ON TABLE public.credit_adjustments IS 'Admin credit adjustments with audit trail and notification tracking'; 

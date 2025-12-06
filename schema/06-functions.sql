@@ -22,7 +22,7 @@ RETURNS TABLE(
 BEGIN
     RETURN QUERY
     SELECT 
-        COALESCE(uc.credits_total, 0) as credits_total,
+        COALESCE(uc.total_credits, 0) as credits_total,
         COALESCE(uc.credits_remaining, 0) as credits_remaining,
         COALESCE(us.status, 'no_subscription') as subscription_status,
         COALESCE(sp.name, 'no_plan') as plan_name,
@@ -64,7 +64,7 @@ BEGIN
         COALESCE(us.status, 'no_subscription') as subscription_status,
         COALESCE(sp.name, 'no_plan') as plan_name,
         COALESCE(sp.display_name, 'No Plan') as plan_display_name,
-        COALESCE(uc.credits_total, 0) as credits_total,
+        COALESCE(uc.total_credits, 0) as credits_total,
         COALESCE(uc.credits_remaining, 0) as credits_remaining,
         up.created_at,
         (SELECT MAX(created_at) FROM public.user_activities WHERE user_id = u.id) as last_activity
@@ -379,23 +379,24 @@ BEGIN
     WHERE name = 'free' AND is_active = true
     LIMIT 1;
     
-    -- Create user profile if it doesn't exist
+    -- Create user profile if it doesn't exist, or update referral_link if missing
     INSERT INTO public.user_profiles (
         user_id,
-        email,
+        referral_link,
         role,
         is_active,
         credits_total,
         credits_remaining
     ) VALUES (
         user_uuid,
-        user_email,
+        'https://promonexai.com/en/register?ref=' || encode(convert_to(COALESCE(user_email, ''), 'UTF8'), 'base64'), -- Generate referral_link as URL with base64 encoded email
         'user',
         true,
         10, -- Free tier credits
         10
     )
-    ON CONFLICT (user_id) DO NOTHING;
+    ON CONFLICT (user_id) DO UPDATE SET
+        referral_link = COALESCE(user_profiles.referral_link, 'https://promonexai.com/en/register?ref=' || encode(convert_to(COALESCE(user_email, ''), 'UTF8'), 'base64'));
     
     -- Create user subscription for free plan if it doesn't exist
     IF free_plan_id IS NOT NULL THEN
@@ -421,11 +422,11 @@ BEGIN
     INSERT INTO public.user_credits (
         user_id,
         total_credits,
-        used_credits
+        credits_remaining
     ) VALUES (
         user_uuid,
         50, -- Free tier credits
-        0
+        50  -- Free tier credits (remaining = total for new users)
     )
     ON CONFLICT (user_id) DO NOTHING;
     

@@ -99,14 +99,10 @@ CREATE TABLE IF NOT EXISTS public.video_scenarios (
             '960:960',    -- 1:1 square
             '1584:672',   -- 21:9 ultra-wide
             '1280:768',   -- 16:9 landscape HD+
-            '768:1280',   -- 9:16 portrait HD
-            '1920:1080',  -- Full HD landscape
-            '1080:1920',  -- Full HD portrait
-            '1440:1440'   -- Square HD
+            '768:1280'    -- 9:16 portrait HD
         )
     ),
     environment TEXT, -- Environment context for the video scenario (e.g., indoor, outdoor, studio, home, office, etc.)
-    thumbnail_text_overlay_prompt TEXT, -- Thumbnail text overlay prompt containing text, position, color and style information
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -117,6 +113,8 @@ CREATE TABLE IF NOT EXISTS public.video_scenes (
     scenario_id UUID REFERENCES public.video_scenarios(id) ON DELETE CASCADE NOT NULL,
     user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
     scene_number INTEGER NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT,
     script TEXT,
     duration INTEGER, -- in seconds
     status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
@@ -126,7 +124,7 @@ CREATE TABLE IF NOT EXISTS public.video_scenes (
     generated_video_url TEXT, -- URL of the generated video for this scene
     visual_prompt TEXT, -- AI prompt used to generate the scene image
     image_prompt TEXT, -- AI prompt used to generate the first frame image for this scene
-    text_overlay_prompt TEXT, -- Text overlay prompt containing text, position, color and style information
+    product_reference_image_url TEXT, -- URL of the product reference image used for this specific scene generation
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
@@ -158,8 +156,7 @@ CREATE INDEX IF NOT EXISTS idx_video_scenes_user_id ON public.video_scenes(user_
 CREATE INDEX IF NOT EXISTS idx_video_scenes_image_url ON public.video_scenes(image_url) WHERE image_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_video_scenes_generated_video_url ON public.video_scenes(generated_video_url) WHERE generated_video_url IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_video_scenes_image_prompt ON public.video_scenes(image_prompt) WHERE image_prompt IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_video_scenes_text_overlay_prompt ON public.video_scenes(text_overlay_prompt) WHERE text_overlay_prompt IS NOT NULL AND text_overlay_prompt != '';
-CREATE INDEX IF NOT EXISTS idx_video_scenarios_thumbnail_text_overlay_prompt ON public.video_scenarios(thumbnail_text_overlay_prompt) WHERE thumbnail_text_overlay_prompt IS NOT NULL AND thumbnail_text_overlay_prompt != '';
+CREATE INDEX IF NOT EXISTS idx_video_scenes_product_reference_image_url ON public.video_scenes(product_reference_image_url) WHERE product_reference_image_url IS NOT NULL;
 
 -- Triggers for updated_at columns
 CREATE TRIGGER update_products_updated_at 
@@ -189,6 +186,5 @@ COMMENT ON COLUMN public.video_scenes.image_url IS 'URL of the generated AI imag
 COMMENT ON COLUMN public.video_scenes.generated_video_url IS 'URL of the generated video for this scene';
 COMMENT ON COLUMN public.video_scenes.visual_prompt IS 'AI prompt used to generate the scene image';
 COMMENT ON COLUMN public.video_scenes.image_prompt IS 'AI prompt used to generate the first frame image for this scene';
-COMMENT ON COLUMN public.video_scenes.text_overlay_prompt IS 'Text overlay prompt containing text, position, color and style information. NULL or empty if no text overlay needed.';
-COMMENT ON COLUMN public.video_scenarios.thumbnail_text_overlay_prompt IS 'Thumbnail text overlay prompt containing text, position, color and style information. NULL or empty if no text overlay needed.';
-COMMENT ON COLUMN public.video_scenes.user_id IS 'User who owns this scene'; 
+COMMENT ON COLUMN public.video_scenes.user_id IS 'User who owns this scene';
+COMMENT ON COLUMN public.video_scenes.product_reference_image_url IS 'URL of the product reference image used for this specific scene generation'; 

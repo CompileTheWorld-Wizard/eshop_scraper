@@ -6,8 +6,9 @@ Uses the existing database functions for credit checking and deduction.
 import logging
 from typing import Dict, Any, Optional, Tuple
 from app.utils.supabase_utils import supabase_manager
+from app.logging_config import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CreditManager:

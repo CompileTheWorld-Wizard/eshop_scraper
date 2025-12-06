@@ -18,9 +18,10 @@ INSERT INTO public.credit_actions (action_name, display_name, description, base_
 ('scraping', 'Product Scraping', 'Scrape product information from e-commerce websites', 1),
 ('generate_scenario', 'Scenario Generation', 'Generate video scenarios based on product information', 2),
 ('generate_scene', 'Scene Generation', 'Generate individual video scenes', 25),
-('generate_image', 'Image Generation', 'Generate AI images for video scenes using Vertex AI and Flux API', 2),
+('generate_image', 'Image Generation', 'Generate AI images for video scenes using RunwayML', 2),
 ('generate_audio', 'Audio Generation', 'Generate audio narration for videos', 2),
-('merge_video', 'Video Merging', 'Merge multiple scenes into final video', 0)
+('merge_video', 'Video Merging', 'Merge multiple scenes into final video', 0),
+('upscale_video', 'Video Upscaling', 'Upscale video quality (5 credits per second)', 5)
 ON CONFLICT (action_name) DO UPDATE SET
     base_credit_cost = EXCLUDED.base_credit_cost,
     updated_at = NOW();
