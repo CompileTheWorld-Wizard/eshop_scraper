@@ -712,6 +712,160 @@ class VertexManager:
                 "status": "error"
             }
     
+    def generate_video_with_prompt_and_reference_images(
+        self,
+        prompt: str,
+        reference_image_urls: List[str],
+        model: str = "veo-3.0-generate-preview",
+        file_path: Optional[str] = None,
+        aspect_ratio: str = "16:9",
+        number_of_videos: int = 1,
+        negative_prompt: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Generate a video using Google Vertex AI with a text prompt and reference images.
+        Uses up to 3 reference images as assets for video generation.
+        
+        Args:
+            prompt: Text prompt for video generation
+            reference_image_urls: List of reference image URLs (max 3)
+            model: Vertex AI model to use (default: veo-3.0-generate-preview)
+            file_path: Optional path to save the generated video(s)
+            aspect_ratio: Aspect ratio for the video (default: "16:9")
+            number_of_videos: Number of videos to generate (default: 1)
+            negative_prompt: Optional negative prompt
+            
+        Returns:
+            Dictionary containing generation results and video paths
+        """
+        if not self.is_available():
+            raise RuntimeError("Vertex AI is not available or properly configured")
+        
+        try:
+            logger.info(f"Starting video generation with model {model} using {len(reference_image_urls)} reference images")
+            
+            # Limit to first 3 reference images
+            limited_images = reference_image_urls[:3]
+            logger.info(f"Using {len(limited_images)} reference images (limited from {len(reference_image_urls)} total)")
+            
+            # Build reference images list using VideoGenerationReferenceImage type
+            reference_images = []
+            for i, image_url in enumerate(limited_images):
+                try:
+                    # Get image bytes and MIME type from URL
+                    image_bytes, mime_type = self._get_image_bytes_from_url(image_url)
+                    
+                    # Create Image object
+                    image_obj = types.Image(image_bytes=image_bytes, mime_type=mime_type)
+                    
+                    # Create VideoGenerationReferenceImage object
+                    reference_image = types.VideoGenerationReferenceImage(
+                        image=image_obj,
+                        reference_type="asset"
+                    )
+                    reference_images.append(reference_image)
+                    logger.info(f"Successfully prepared reference image {i+1}: {image_url[:100]}...")
+                except Exception as e:
+                    logger.warning(f"Failed to prepare reference image {i+1} ({image_url}): {e}")
+                    continue
+            
+            if not reference_images:
+                raise RuntimeError("No valid reference images could be prepared")
+            
+            # Determine aspect ratio
+            video_aspect_ratio = (
+                "9:16"
+                if (aspect_ratio and ":" in aspect_ratio and int(aspect_ratio.split(":")[0]) < int(aspect_ratio.split(":")[1]))
+                else "16:9"
+            )
+            
+            # Create video generation operation with reference images in config
+            operation = self.client.models.generate_videos(
+                model=model,
+                prompt=prompt,
+                config=types.GenerateVideosConfig(
+                    duration_seconds=8,
+                    aspect_ratio=video_aspect_ratio,
+                    resolution="1080p",
+                    generate_audio=False,
+                    number_of_videos=number_of_videos,
+                    negative_prompt=negative_prompt,
+                    reference_images=reference_images,
+                ),
+            )
+            
+            # Wait for the video(s) to be generated
+            logger.info("Waiting for video generation to complete...")
+            while not operation.done:
+                time.sleep(3)
+                operation = self.client.operations.get(operation)
+                logger.info(f"Video generation status: {operation}")
+            
+            # Check if the operation completed successfully
+            if operation.error:
+                error_msg = f"Video generation failed: {operation.error.get('message', 'Unknown error')}"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "status": "error"
+                }
+            
+            # Check if result is available
+            if not operation.result:
+                error_msg = "Video generation completed but no result was returned"
+                logger.error(error_msg)
+                return {
+                    "success": False,
+                    "error": error_msg,
+                    "status": "error"
+                }
+            
+            logger.info("Video generation completed successfully")
+            
+            # Process generated videos
+            generated_videos = operation.result.generated_videos
+            video_paths = []
+            
+            for n, generated_video in enumerate(generated_videos):
+                # Save video if file_path is provided
+                if file_path:
+                    if number_of_videos > 1:
+                        # If multiple videos, add index to filename
+                        base_path = Path(file_path)
+                        video_filename = f"{base_path.stem}_{n}{base_path.suffix}"
+                        video_path = base_path.parent / video_filename
+                    else:
+                        video_path = file_path
+                    
+                    generated_video.video.save(str(video_path))
+                    video_paths.append(str(video_path))
+                    logger.info(f"Video saved to: {video_path}")
+                else:
+                    # Just store the video object reference
+                    video_paths.append(generated_video.video)
+            
+            return {
+                "success": True,
+                "model": model,
+                "prompt": prompt,
+                "reference_images_count": len(reference_images),
+                "aspect_ratio": video_aspect_ratio,
+                "number_of_videos": number_of_videos,
+                "negative_prompt": negative_prompt,
+                "generated_videos": generated_videos,
+                "video_paths": video_paths,
+                "status": "completed"
+            }
+            
+        except Exception as e:
+            logger.error(f"Video generation with reference images failed: {e}")
+            return {
+                "success": False,
+                "error": str(e),
+                "status": "error"
+            }
+    
     def add_text_overlay_to_image(
         self,
         image_path: str,
@@ -875,6 +1029,21 @@ def generate_video_with_prompt_and_image(
     """Convenience function to generate video with prompt and image URL."""
     return vertex_manager.generate_video_with_prompt_and_image(
         prompt, image_url, model, file_path, aspect_ratio, number_of_videos, negative_prompt
+    )
+
+
+def generate_video_with_prompt_and_reference_images(
+    prompt: str,
+    reference_image_urls: List[str],
+    model: str = "veo-3.0-generate-preview",
+    file_path: Optional[str] = None,
+    aspect_ratio: str = "16:9",
+    number_of_videos: int = 1,
+    negative_prompt: Optional[str] = None
+) -> Dict[str, Any]:
+    """Convenience function to generate video with prompt and reference images."""
+    return vertex_manager.generate_video_with_prompt_and_reference_images(
+        prompt, reference_image_urls, model, file_path, aspect_ratio, number_of_videos, negative_prompt
     )
 
 

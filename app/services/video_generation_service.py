@@ -20,7 +20,7 @@ from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 from app.logging_config import get_logger
-from app.utils.vertex_utils import generate_video_with_prompt_and_image, generate_image_with_recontext_and_upscale, add_text_overlay_to_image, vertex_manager
+from app.utils.vertex_utils import generate_video_with_prompt_and_image, generate_video_with_prompt_and_reference_images, generate_image_with_recontext_and_upscale, add_text_overlay_to_image, vertex_manager
 from app.utils.flux_utils import flux_manager
 from app.utils.supabase_utils import supabase_manager
 from app.utils.credit_utils import credit_manager
@@ -414,18 +414,22 @@ class VideoGenerationService:
             if not scene_data:
                 raise Exception(f"Scene {scene_id} not found")
             
-            # Step 2: Generate image if needed
-            update_task_progress(task_id, 2, 'Generating scene image with AI', 45.0)
-            image_url = await self._generate_image_if_needed(scene_data, user_id, task_id, force_regenerate_first_frame)
+            # Step 2: Get product reference images (first 3)
+            update_task_progress(task_id, 2, 'Getting product reference images', 30.0)
+            reference_images = await self._get_product_images_for_scene(scene_id)
+            if not reference_images:
+                raise Exception(f"No product images found for scene {scene_id}")
             
-            # Step 3: Generate video with retry logic
+            logger.info(f"Retrieved {len(reference_images)} reference images for video generation")
+            
+            # Step 3: Generate video with retry logic using reference images
             public_video_url = None
             signed_video_url = None
             while retry_count <= max_retries:
                 try:
-                    update_task_progress(task_id, 3, f'Creating video from generated image (attempt {retry_count + 1})', 80.0)
+                    update_task_progress(task_id, 3, f'Creating video with reference images (attempt {retry_count + 1})', 70.0)
                     # Get (public_url, signed_url) tuple for the generated video
-                    public_video_url, signed_video_url = self._generate_video(scene_data, image_url, user_id, task_id)
+                    public_video_url, signed_video_url = self._generate_video_with_references(scene_data, reference_images, user_id, task_id)
                     
                     # If we get here, video generation was successful
                     break
@@ -438,11 +442,7 @@ class VideoGenerationService:
                     if self._is_retryable_video_error(error_msg) and retry_count < max_retries:
                         retry_count += 1
                         logger.info(f"Retryable error detected: {error_msg}")
-                        logger.info(f"Regenerating image and retrying video generation (attempt {retry_count + 1}/{max_retries + 1})")
-                        
-                        # Regenerate image for retry
-                        update_task_progress(task_id, 2, f'Regenerating image due to content policy (attempt {retry_count + 1})', 45.0)
-                        image_url = await self._generate_image_if_needed(scene_data, user_id, task_id, force_regenerate=True)
+                        logger.info(f"Retrying video generation (attempt {retry_count + 1}/{max_retries + 1})")
                         
                         # Wait a bit before retrying
                         import time
@@ -460,13 +460,12 @@ class VideoGenerationService:
             update_task_progress(task_id, 4, 'Saving results and finalizing', 95.0)
             
             if public_video_url and signed_video_url:
-                # Store public URL in database for permanent access
-                self._update_scene_urls(scene_id, image_url, public_video_url)
+                # Store public URL in database for permanent access (no image_url as we're not generating first frame)
+                self._update_scene_video_url(scene_id, public_video_url)
                 
                 # Complete the task with signed URL for immediate access
                 complete_task(task_id, {
                     'scene_id': scene_id,
-                    'image_url': image_url,
                     'video_url': signed_video_url,  # Signed URL for immediate access
                     'status': 'completed'
                 })
@@ -876,6 +875,96 @@ class VideoGenerationService:
             
         except Exception as e:
             logger.error(f"Failed to generate video for scene {scene_data['id']}: {e}")
+            raise
+        finally:
+            # Clean up temporary video file
+            if temp_video_path and os.path.exists(temp_video_path):
+                try:
+                    os.unlink(temp_video_path)
+                    logger.info(f"Cleaned up temporary video file: {temp_video_path}")
+                except Exception as cleanup_error:
+                    logger.warning(f"Failed to clean up temporary video file {temp_video_path}: {cleanup_error}")
+    
+    def _generate_video_with_references(self, scene_data: Dict[str, Any], reference_images: List[str], user_id: str, task_id: str) -> tuple[str, str]:
+        """Generate video using prompt and reference images. Returns (public_url, signed_url) tuple for the generated video."""
+        temp_video_path = None
+        try:
+            visual_prompt = scene_data.get('visual_prompt')
+            
+            if not visual_prompt:
+                raise Exception("Visual prompt is required for video generation")
+            
+            if not reference_images:
+                raise Exception("At least one reference image is required for video generation")
+            
+            # Check credits before generation
+            credit_check = credit_manager.can_perform_action(user_id, "generate_scene")
+            if credit_check.get("error") or not credit_check.get("can_perform", False):
+                raise Exception(f"Insufficient credits for video generation: {credit_check.get('reason', 'Unknown error')}")
+            
+            # Get resolution mapping for video generation
+            scene_id = scene_data['id']
+            video_resolution = self._get_scenario_resolution(scene_id)
+            resolution_mapping = self._get_resolution_mapping(video_resolution)
+            video_ratio = resolution_mapping['video_ratio']
+            
+            logger.info(f"Using video ratio {video_ratio} for scene {scene_id} (scenario resolution: {video_resolution})")
+            logger.info(f"Using {len(reference_images)} reference images for video generation")
+            
+            # Update progress - starting AI video generation
+            update_task_progress(task_id, 3, 'Creating video with reference images', 70.0)
+            
+            # Create temporary file path for video
+            temp_video_path = f"temp_video_{uuid.uuid4()}.mp4"
+            
+            # Generate video using prompt and reference images
+            result = generate_video_with_prompt_and_reference_images(
+                prompt=visual_prompt,
+                reference_image_urls=reference_images,
+                model="veo-3.1-generate-preview",
+                file_path=temp_video_path,
+                aspect_ratio=video_ratio,
+                number_of_videos=1
+            )
+            
+            if not result or not result.get('success'):
+                error_msg = result.get('error', 'Unknown error') if result else 'No result returned'
+                raise Exception(f"Failed to generate video with reference images: {error_msg}")
+            
+            # Check if video was saved locally
+            if not result.get('video_paths') or not result['video_paths']:
+                raise Exception("Video was not saved to local storage")
+            
+            # Get the video path (should be the temp file we created)
+            video_path = result['video_paths'][0]
+            if not os.path.exists(video_path):
+                raise Exception(f"Generated video file not found at {video_path}")
+            
+            # Update progress - clearing existing videos and uploading new one
+            update_task_progress(task_id, 3, 'Storing generated video', 85.0)
+            
+            # Clear existing videos in the target folder before uploading new one
+            self._clear_existing_videos_in_folder(user_id, scene_id)
+            
+            # Upload video to Supabase
+            logger.info(f"Uploading video to Supabase for scene {scene_id}")
+            public_url, signed_url = self._store_local_video_in_supabase(video_path, user_id, scene_id)
+            
+            logger.info(f"Successfully stored video for scene {scene_id}")
+            
+            # Deduct credits after successful generation
+            credit_manager.deduct_credits(
+                user_id=user_id,
+                action_name="generate_scene",
+                reference_id=scene_data['id'],
+                reference_type="scene",
+                description=f"Generated video for scene {scene_data['id']}"
+            )
+            
+            return public_url, signed_url
+            
+        except Exception as e:
+            logger.error(f"Failed to generate video with references for scene {scene_data['id']}: {e}")
             raise
         finally:
             # Clean up temporary video file
@@ -1349,6 +1438,38 @@ class VideoGenerationService:
             
         except Exception as e:
             logger.error(f"Failed to update scene {scene_id} with generated URLs: {e}")
+            raise
+    
+    def _update_scene_video_url(self, scene_id: str, video_url: str):
+        """
+        Update the scene with generated video URL only in PostgreSQL database.
+        Used when generating videos with reference images (no first frame image).
+        
+        Args:
+            scene_id: The UUID of the scene
+            video_url: The public URL of the generated video
+        """
+        try:
+            if not supabase_manager.is_connected():
+                raise Exception("Supabase connection not available")
+            
+            # Log the video URL being stored for debugging
+            logger.info(f"Saving scene video URL for scene_id={scene_id}: video_url={video_url}")
+            
+            # Update scene with video URL (video_url is the public URL for database storage)
+            result = supabase_manager.client.table('video_scenes').update({
+                'generated_video_url': video_url,  # Public URL stored in database
+                'status': 'completed',
+                'updated_at': datetime.now().isoformat()
+            }).eq('id', scene_id).execute()
+            
+            if not result.data:
+                raise Exception("Failed to update scene with generated video URL")
+            
+            logger.info(f"Updated scene {scene_id} with generated video URL (public video URL stored in database)")
+            
+        except Exception as e:
+            logger.error(f"Failed to update scene {scene_id} with generated video URL: {e}")
             raise
     
     def _run_sync(self, coro):
