@@ -772,20 +772,13 @@ class VertexManager:
             if not reference_images:
                 raise RuntimeError("No valid reference images could be prepared")
             
-            # Determine aspect ratio
-            video_aspect_ratio = (
-                "9:16"
-                if (aspect_ratio and ":" in aspect_ratio and int(aspect_ratio.split(":")[0]) < int(aspect_ratio.split(":")[1]))
-                else "16:9"
-            )
-            
             # Create video generation operation with reference images in config
             operation = self.client.models.generate_videos(
                 model=model,
                 prompt=prompt,
                 config=types.GenerateVideosConfig(
                     duration_seconds=8,
-                    aspect_ratio=video_aspect_ratio,
+                    aspect_ratio="16:9",
                     resolution="1080p",
                     generate_audio=False,
                     number_of_videos=number_of_videos,
@@ -850,7 +843,7 @@ class VertexManager:
                 "model": model,
                 "prompt": prompt,
                 "reference_images_count": len(reference_images),
-                "aspect_ratio": video_aspect_ratio,
+                "aspect_ratio": "16:9",
                 "number_of_videos": number_of_videos,
                 "negative_prompt": negative_prompt,
                 "generated_videos": generated_videos,
