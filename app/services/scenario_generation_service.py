@@ -143,6 +143,22 @@ class ScenarioGenerationService:
                 "thumbnail_url": thumbnail_url  # Pass thumbnail URL in response
             })
 
+            # Step 4: Deduct credits after successful scenario generation
+            try:
+                success = deduct_credits(
+                    user_id=request.user_id,
+                    action_name="generate_scenario",
+                    reference_id=scenario.id if hasattr(scenario, 'id') else request.product_id,
+                    reference_type="scenario",
+                    description=f"Generated scenario for product {request.product_id}"
+                )
+                if success:
+                    logger.info(f"Successfully deducted credits for user {request.user_id} for scenario generation task {task_id}")
+                else:
+                    logger.warning(f"Failed to deduct credits for user {request.user_id} for scenario generation task {task_id}")
+            except Exception as credit_error:
+                logger.error(f"Error deducting credits for user {request.user_id} for scenario generation task {task_id}: {credit_error}")
+
             logger.info(
                 f"[{thread_name}] Scenario generation task {task_id} completed successfully")
 

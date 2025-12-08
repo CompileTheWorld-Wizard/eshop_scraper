@@ -225,10 +225,10 @@ BEGIN
     
     -- Record transaction
     INSERT INTO public.credit_transactions (
-        user_id, action_id, transaction_type, credits_amount, 
+        user_id, action_id, type, transaction_type, credits_amount, 
         reference_id, reference_type, description
     ) VALUES (
-        user_uuid, action_id_val, 'deduction', credit_cost_val,
+        user_uuid, action_id_val, action_name, 'deduction', credit_cost_val,
         reference_id, reference_type, description
     );
     
@@ -279,10 +279,10 @@ BEGIN
     
     -- Record transaction
     INSERT INTO public.credit_transactions (
-        user_id, action_id, transaction_type, credits_amount, 
+        user_id, action_id, type, transaction_type, credits_amount, 
         reference_id, reference_type, description
     ) VALUES (
-        user_uuid, action_id_val, 'addition', credits_amount,
+        user_uuid, action_id_val, action_name, 'addition', credits_amount,
         reference_id, reference_type, description
     );
     

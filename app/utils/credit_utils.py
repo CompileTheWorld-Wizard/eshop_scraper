@@ -127,11 +127,20 @@ class CreditManager:
                 }
             ).execute()
             
-            if result.data and result.data[0]:
+            # Handle different return types from Supabase RPC
+            success = False
+            if isinstance(result.data, bool):
+                success = result.data
+            elif isinstance(result.data, list) and result.data:
+                success = bool(result.data[0])
+            else:
+                success = bool(result.data)  # Fallback for other unexpected formats
+            
+            if success:
                 logger.info(f"Successfully deducted credits for user {user_id}, action {action_name}")
                 return True
             else:
-                logger.warning(f"Failed to deduct credits for user {user_id}, action {action_name}")
+                logger.warning(f"Failed to deduct credits for user {user_id}, action {action_name} - result.data: {result.data}")
                 return False
                 
         except Exception as e:
@@ -173,11 +182,20 @@ class CreditManager:
                 }
             ).execute()
             
-            if result.data and result.data[0]:
+            # Handle different return types from Supabase RPC
+            success = False
+            if isinstance(result.data, bool):
+                success = result.data
+            elif isinstance(result.data, list) and result.data:
+                success = bool(result.data[0])
+            else:
+                success = bool(result.data)  # Fallback for other unexpected formats
+            
+            if success:
                 logger.info(f"Successfully added {credits_amount} credits for user {user_id}")
                 return True
             else:
-                logger.warning(f"Failed to add credits for user {user_id}")
+                logger.warning(f"Failed to add credits for user {user_id} - result.data: {result.data}")
                 return False
                 
         except Exception as e:

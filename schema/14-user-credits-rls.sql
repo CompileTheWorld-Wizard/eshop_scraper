@@ -65,6 +65,7 @@ BEGIN
         INSERT INTO public.credit_transactions (
             user_id, 
             action_id, 
+            type,
             transaction_type, 
             credits_amount, 
             reference_id, 
@@ -75,6 +76,7 @@ BEGIN
         SELECT 
             user_uuid,
             (SELECT id FROM public.credit_actions WHERE action_name = reference_type LIMIT 1),
+            reference_type,
             'addition',
             amount,
             reference_uuid, -- Use converted UUID
