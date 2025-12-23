@@ -183,7 +183,7 @@ class Scene(BaseModel):
     scene_id: str = Field(..., description="Unique identifier for this scene")
     scene_number: int = Field(..., description="Scene number")
     description: str = Field(..., description="Human-readable scene description")
-    duration: int = Field(..., description="Duration in seconds (must be exactly 5)")
+    duration: int = Field(default=8, description="Duration in seconds (must be exactly 8)")
     image_prompt: str = Field(..., description="Detailed prompt for first frame image generation")
     visual_prompt: str = Field(..., description="Safe video prompt for video generation")
     image_reasoning: str = Field(..., description="Why this image was chosen for this scene")

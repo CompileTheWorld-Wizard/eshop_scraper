@@ -802,7 +802,7 @@ class VideoGenerationService:
         temp_video_path = None
         try:
             visual_prompt = scene_data.get('visual_prompt')
-            duration = scene_data.get('duration', 5)  # Default 5 seconds
+            duration = scene_data.get('duration', 8)  # Default 8 seconds
             
             if not visual_prompt:
                 raise Exception("Visual prompt is required for video generation")
