@@ -510,9 +510,9 @@ Scene 3–6:
 
 Return only this JSON if inputs insufficient:
 
-{
+{{
   "error": "Missing or insufficient source inputs for SCENE_PLAN generation; provide complete PRODUCT_CONTEXT, product_url, and REFERENCE_IMAGES."
-}
+}}
 
 Triggers:
 - REFERENCE_IMAGES empty
@@ -550,9 +550,9 @@ SUCCESS (EXTENDED_SCENES=true):
 OR
 
 ERROR:
-{
+{{
   "error": "Missing or insufficient source inputs for SCENE_PLAN generation; provide complete PRODUCT_CONTEXT, product_url, and REFERENCE_IMAGES."
-}
+}}
 
 No extra text. No markdown. No explanations.
  """
