@@ -113,8 +113,10 @@ class ScenarioGenerationService:
                 task_id, 0, "Starting scenario generation", 20.0)
 
             # Check if user has enough credits
-            if not can_perform_action(request.user_id, "generate_scenario"):
-                raise Exception("Insufficient credits for scenario generation")
+            credit_check = can_perform_action(request.user_id, "generate_scenario")
+            if credit_check.get("error") or not credit_check.get("can_perform", False):
+                reason = credit_check.get("reason", "Insufficient credits for scenario generation")
+                raise Exception(f"Cannot perform scenario generation: {reason}")
 
             update_task_progress(task_id, 20, "Generating AI scenario", 60.0)
 

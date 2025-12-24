@@ -1261,10 +1261,23 @@ def generate_audio(
         logger.info(f"Starting audio generation for short {request.short_id} with voice {request.voice_id} by user {request.user_id}")
 
         # Check if user has enough credits
-        if not can_perform_action(request.user_id, "generate_audio"):
+        credit_check = can_perform_action(request.user_id, "generate_audio")
+        if credit_check.get("error"):
+            raise HTTPException(status_code=400, detail=f"Credit check failed: {credit_check['error']}")
+        
+        if not credit_check.get("can_perform", False):
+            reason = credit_check.get("reason", "Insufficient credits")
+            current_credits = credit_check.get("current_credits", 0)
+            required_credits = credit_check.get("required_credits", 1)
             raise HTTPException(
                 status_code=402, 
-                detail="Insufficient credits for audio generation"
+                detail={
+                    "error": "Insufficient credits",
+                    "reason": reason,
+                    "current_credits": current_credits,
+                    "required_credits": required_credits,
+                    "message": f"You need {required_credits} credit(s) to perform this action. You currently have {current_credits} credit(s)."
+                }
             )
 
         # Generate audio directly and return result

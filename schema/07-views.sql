@@ -18,10 +18,10 @@ SELECT
     COALESCE(us.status, 'no_subscription') as subscription_status,
     COALESCE(sp.name, 'no_plan') as plan_name,
     COALESCE(sp.display_name, 'No Plan') as plan_display_name,
-    COALESCE(uc.credits_total, up.credits_total, 0) as credits_total,
+    COALESCE(uc.total_credits, up.credits_total, 0) as credits_total,
     COALESCE(uc.credits_remaining, up.credits_remaining, 0) as credits_remaining,
     COALESCE(uc.credits_remaining, up.credits_remaining, 0) as available_credits, -- Add alias for code compatibility
-    COALESCE(uc.credits_total, up.credits_total, 0) - COALESCE(uc.credits_remaining, up.credits_remaining, 0) as used_credits, -- Add used_credits
+    COALESCE(uc.total_credits, up.credits_total, 0) - COALESCE(uc.credits_remaining, up.credits_remaining, 0) as used_credits, -- Add used_credits
     (SELECT COUNT(*) FROM public.shorts WHERE user_id = u.id) as total_shorts,
     (SELECT COUNT(*) FROM public.shorts WHERE user_id = u.id AND status = 'completed') as completed_shorts,
     (SELECT COUNT(*) FROM public.shorts WHERE user_id = u.id AND status = 'published') as published_shorts, -- Add published_shorts
@@ -78,7 +78,7 @@ SELECT
     COUNT(CASE WHEN us.status = 'active' THEN 1 END)::bigint as active_subscribers,
     COUNT(CASE WHEN us.status = 'canceled' THEN 1 END)::bigint as canceled_subscribers,
     AVG(COALESCE(uc.credits_remaining, up.credits_remaining, 0))::numeric(10,2) as avg_credits_remaining,
-    SUM(COALESCE(uc.credits_total, up.credits_total, 0))::bigint as total_credits_purchased
+    SUM(COALESCE(uc.total_credits, up.credits_total, 0))::bigint as total_credits_purchased
 FROM auth.users u
 LEFT JOIN public.user_profiles up ON u.id = up.user_id
 LEFT JOIN public.user_subscriptions us ON u.id = us.user_id
