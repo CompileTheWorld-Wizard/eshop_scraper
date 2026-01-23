@@ -35,13 +35,6 @@ CREATE INDEX IF NOT EXISTS idx_error_logs_user_id ON public.error_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_error_logs_resolved ON public.error_logs(resolved);
 CREATE INDEX IF NOT EXISTS idx_error_logs_request_id ON public.error_logs(request_id) WHERE request_id IS NOT NULL;
 
--- Trigger for updated_at column
-DROP TRIGGER IF EXISTS update_error_logs_updated_at ON public.error_logs;
-CREATE TRIGGER update_error_logs_updated_at 
-    BEFORE UPDATE ON public.error_logs 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
 -- Comments
 COMMENT ON TABLE public.error_logs IS 'Centralized error logging table for tracking all application errors';
 COMMENT ON COLUMN public.error_logs.error_type IS 'Type of error: api, database, external_api, auth, validation, system';
@@ -65,6 +58,36 @@ CREATE TABLE IF NOT EXISTS public.health_checks (
 CREATE INDEX IF NOT EXISTS idx_health_checks_service ON public.health_checks(service_name, checked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_health_checks_status ON public.health_checks(status);
 CREATE INDEX IF NOT EXISTS idx_health_checks_checked_at ON public.health_checks(checked_at DESC);
+
+-- Row Level Security for health_checks table
+ALTER TABLE public.health_checks ENABLE ROW LEVEL SECURITY;
+
+-- Allow authenticated users to read health checks
+CREATE POLICY "Authenticated users can view health checks" ON public.health_checks
+FOR SELECT
+USING (auth.uid() IS NOT NULL);
+
+-- Allow admins to manage health checks
+CREATE POLICY "Admins can manage health checks" ON public.health_checks
+FOR ALL
+USING (
+    EXISTS (
+        SELECT 1 FROM public.user_profiles
+        WHERE user_profiles.user_id = auth.uid()
+        AND user_profiles.role = 'admin'
+    )
+)
+WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM public.user_profiles
+        WHERE user_profiles.user_id = auth.uid()
+        AND user_profiles.role = 'admin'
+    )
+);
+
+-- Grant permissions
+GRANT SELECT ON public.health_checks TO authenticated;
+GRANT ALL ON public.health_checks TO service_role;
 
 -- Comments
 COMMENT ON TABLE public.health_checks IS 'Health check results for all monitored services';
@@ -115,13 +138,6 @@ CREATE TABLE IF NOT EXISTS public.alert_rules (
 -- Indexes for alert_rules
 CREATE INDEX IF NOT EXISTS idx_alert_rules_enabled ON public.alert_rules(enabled);
 CREATE INDEX IF NOT EXISTS idx_alert_rules_condition_type ON public.alert_rules(condition_type);
-
--- Trigger for updated_at column
-DROP TRIGGER IF EXISTS update_alert_rules_updated_at ON public.alert_rules;
-CREATE TRIGGER update_alert_rules_updated_at 
-    BEFORE UPDATE ON public.alert_rules 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
 
 -- Comments
 COMMENT ON TABLE public.alert_rules IS 'Alert rules that define when alerts should be triggered';

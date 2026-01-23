@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS public.user_profiles (
     company_url TEXT,
     referral_source TEXT,
     referral_source_other TEXT,
-    referral_link TEXT, -- Unique referral link for this user
     onboarding_completed BOOLEAN DEFAULT false,
     avatar_url TEXT,
     phone TEXT,
@@ -22,11 +21,16 @@ CREATE TABLE IF NOT EXISTS public.user_profiles (
     social_links JSONB DEFAULT '{}',
     preferences JSONB DEFAULT '{}',
     role TEXT DEFAULT 'user', -- user, admin, moderator
-    is_active BOOLEAN DEFAULT true, -- whether user account is active/enabled
     credits_total INTEGER DEFAULT 0,
     credits_remaining INTEGER DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    is_active BOOLEAN NOT NULL DEFAULT true, -- whether user account is active/enabled
+    referral_link TEXT, -- Unique referral link for this user
+    referral_clicks INTEGER DEFAULT 0, -- number of clicks on referral link
+    is_trial_user BOOLEAN NOT NULL DEFAULT false, -- whether user is a trial user (no subscription)
+    trial_preview_used BOOLEAN NOT NULL DEFAULT false, -- whether trial user has used their one-time preview
+    trial_preview_used_at TIMESTAMP WITH TIME ZONE, -- when trial preview was used
     UNIQUE(user_id)
 );
 
@@ -35,12 +39,6 @@ CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON public.user_profiles(use
 CREATE INDEX IF NOT EXISTS idx_user_profiles_created_at ON public.user_profiles(created_at);
 CREATE INDEX IF NOT EXISTS idx_user_profiles_role ON public.user_profiles(role);
 CREATE INDEX IF NOT EXISTS idx_user_profiles_referral_link ON public.user_profiles(referral_link);
-
--- Trigger for updated_at column
-CREATE TRIGGER update_user_profiles_updated_at 
-    BEFORE UPDATE ON public.user_profiles 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
 
 -- User referrals table - tracks who referred whom
 CREATE TABLE IF NOT EXISTS public.user_referrals (
@@ -61,8 +59,8 @@ CREATE TABLE IF NOT EXISTS public.referral_commissions (
     id UUID DEFAULT uuid_generate_v4() PRIMARY KEY,
     referrer_user UUID REFERENCES auth.users(id) ON DELETE SET NULL NOT NULL,
     referred_user UUID REFERENCES auth.users(id) ON DELETE SET NULL NOT NULL,
-    amount NUMERIC(10, 2) NOT NULL, -- Commission amount with 2 decimal places
-    payment_id TEXT, -- Stripe payment ID
+    amount NUMERIC NOT NULL,
+    payment_id TEXT,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

@@ -1,33 +1,35 @@
 -- Auto-Promo AI Initial Data
 -- Default subscription plans and credit actions
 
--- Insert default subscription plans with feature configuration and 2024 pricing
-INSERT INTO public.subscription_plans (name, display_name, description, price_monthly, price_yearly, monthly_credits, features, limits, feature_config) VALUES
-('free', 'Free Plan', 'Basic features with limited usage', 0, 0, 5, '["Basic scraping", "Basic scenario generation", "Basic scene generation"]', '{"scraping": 1, "scenario_generation": 1, "scene_generation": 1}', '{"product_scraping": {"enabled": true, "description": "Basic product scraping"}, "edit_product_info": {"enabled": true, "description": "Edit product information"}, "generate_scenario": {"enabled": true, "description": "Generate video scenarios"}, "regenerate_video": {"enabled": false, "description": "Regenerate videos"}, "custom_audio_settings": {"enabled": false, "description": "Custom audio settings"}, "regenerate_audio": {"enabled": false, "description": "Regenerate audio"}, "merge_video_audio_subtitle": {"enabled": true, "description": "Merge video, audio, and subtitles"}, "watermark": {"enabled": false, "description": "Add watermarks"}, "publish_social_media": {"enabled": false, "description": "Publish to social media"}}'),
-('starter', 'Starter Plan', 'Perfect for small businesses', 19.99, 199.99, 1000, '["Advanced scraping", "Multiple scenarios", "Priority support"]', '{"scraping": 50, "scenario_generation": 10, "scene_generation": 40}', '{"product_scraping": {"enabled": true, "description": "Advanced product scraping"}, "edit_product_info": {"enabled": true, "description": "Edit product information"}, "generate_scenario": {"enabled": true, "description": "Generate video scenarios"}, "regenerate_video": {"enabled": true, "description": "Regenerate videos"}, "custom_audio_settings": {"enabled": true, "description": "Custom audio settings"}, "regenerate_audio": {"enabled": true, "description": "Regenerate audio"}, "merge_video_audio_subtitle": {"enabled": true, "description": "Merge video, audio, and subtitles"}, "watermark": {"enabled": false, "description": "Add watermarks"}, "publish_social_media": {"enabled": false, "description": "Publish to social media"}}'),
-('professional', 'Professional Plan', 'For growing businesses', 49.99, 499.99, 2500, '["Unlimited scraping", "Unlimited scenarios", "Advanced analytics", "Priority support", "Video upscaling"]', '{"scraping": 100, "scenario_generation": 25, "scene_generation": 100}', '{"product_scraping": {"enabled": true, "description": "Unlimited product scraping"}, "edit_product_info": {"enabled": true, "description": "Edit product information"}, "generate_scenario": {"enabled": true, "description": "Generate video scenarios"}, "regenerate_video": {"enabled": true, "description": "Regenerate videos"}, "custom_audio_settings": {"enabled": true, "description": "Custom audio settings"}, "regenerate_audio": {"enabled": true, "description": "Regenerate audio"}, "merge_video_audio_subtitle": {"enabled": true, "description": "Merge video, audio, and subtitles"}, "watermark": {"enabled": true, "description": "Add watermarks"}, "publish_social_media": {"enabled": true, "description": "Publish to social media"}, "video_upscaling": {"enabled": true, "description": "Upscale video quality"}}'),
-('enterprise', 'Enterprise Plan', 'For large organizations', 99.99, 999.99, 5000, '["Everything in Professional", "Custom integrations", "Dedicated support", "White-label options"]', '{"scraping": 200, "scenario_generation": 50, "scene_generation": 200}', '{"product_scraping": {"enabled": true, "description": "Unlimited product scraping"}, "edit_product_info": {"enabled": true, "description": "Edit product information"}, "generate_scenario": {"enabled": true, "description": "Generate video scenarios"}, "regenerate_video": {"enabled": true, "description": "Regenerate videos"}, "custom_audio_settings": {"enabled": true, "description": "Custom audio settings"}, "regenerate_audio": {"enabled": true, "description": "Regenerate audio"}, "merge_video_audio_subtitle": {"enabled": true, "description": "Merge video, audio, and subtitles"}, "watermark": {"enabled": true, "description": "Add watermarks"}, "publish_social_media": {"enabled": true, "description": "Publish to social media"}, "video_upscaling": {"enabled": true, "description": "Upscale video quality"}}')
+-- Insert default subscription plans with credit configuration and 2024 pricing
+INSERT INTO public.subscription_plans (name, display_name, description, price_monthly, price_yearly, monthly_credits, credit_config, watermark_enabled, is_active) VALUES
+('free', 'Free Plan', 'Basic features with limited usage', 0, 0, 5, '{"video_merging": 1, "audio_generation": 1, "product_scraping": 1, "scenario_generation": 2, "video_scene_generation": 3}'::jsonb, true, true),
+('starter', 'Starter Plan', 'Perfect for small businesses', 19.99, 199.99, 1000, '{"video_merging": 1, "audio_generation": 1, "product_scraping": 1, "scenario_generation": 2, "video_scene_generation": 3}'::jsonb, false, true),
+('professional', 'Professional Plan', 'For growing businesses', 49.99, 499.99, 2500, '{"video_merging": 1, "audio_generation": 1, "product_scraping": 1, "scenario_generation": 2, "video_scene_generation": 3}'::jsonb, false, true),
+('enterprise', 'Enterprise Plan', 'For large organizations', 99.99, 999.99, 5000, '{"video_merging": 1, "audio_generation": 1, "product_scraping": 1, "scenario_generation": 2, "video_scene_generation": 3}'::jsonb, false, true)
 ON CONFLICT (name) DO UPDATE SET 
     price_monthly = EXCLUDED.price_monthly,
     price_yearly = EXCLUDED.price_yearly,
     monthly_credits = EXCLUDED.monthly_credits,
-    feature_config = EXCLUDED.feature_config;
+    credit_config = EXCLUDED.credit_config,
+    watermark_enabled = EXCLUDED.watermark_enabled;
 
 -- Insert default credit actions with 2024 credit costs
-INSERT INTO public.credit_actions (action_name, display_name, description, base_credit_cost) VALUES
-('scraping', 'Product Scraping', 'Scrape product information from e-commerce websites', 1),
-('generate_scenario', 'Scenario Generation', 'Generate video scenarios based on product information', 2),
-('generate_scene', 'Scene Generation', 'Generate individual video scenes', 25),
-('generate_image', 'Image Generation', 'Generate AI images for video scenes using RunwayML', 2),
-('generate_audio', 'Audio Generation', 'Generate audio narration for videos', 2),
-('merge_video', 'Video Merging', 'Merge multiple scenes into final video', 0),
-('upscale_video', 'Video Upscaling', 'Upscale video quality (5 credits per second)', 5)
+INSERT INTO public.credit_actions (action_name, display_name, description, base_credit_cost, is_active) VALUES
+('scraping', 'Product Scraping', 'Scrape product information from e-commerce websites', 1, true),
+('generate_scenario', 'Scenario Generation', 'Generate video scenarios based on product information', 2, true),
+('generate_scene', 'Scene Generation', 'Generate individual video scenes', 25, true),
+('generate_image', 'Image Generation', 'Generate AI images for video scenes using RunwayML', 2, true),
+('generate_audio', 'Audio Generation', 'Generate audio narration for videos', 2, true),
+('merge_video', 'Video Merging', 'Merge multiple scenes into final video', 0, true),
+('upscale_video', 'Video Upscaling', 'Upscale video quality (5 credits per second)', 5, true)
 ON CONFLICT (action_name) DO UPDATE SET
     base_credit_cost = EXCLUDED.base_credit_cost,
+    is_active = EXCLUDED.is_active,
     updated_at = NOW();
 
 -- Insert default plan credit configurations with 2024 limits
-INSERT INTO public.plan_credit_configs (plan_id, action_id, credit_cost, monthly_limit, daily_limit)
+INSERT INTO public.plan_credit_configs (plan_id, action_id, credit_cost, monthly_limit, daily_limit, is_active)
 SELECT 
     sp.id as plan_id,
     ca.id as action_id,
@@ -69,14 +71,16 @@ SELECT
     CASE 
         WHEN sp.name = 'free' THEN 1
         ELSE NULL
-    END as daily_limit
+    END as daily_limit,
+    true as is_active
 FROM public.subscription_plans sp
 CROSS JOIN public.credit_actions ca
 WHERE sp.is_active = true AND ca.is_active = true
 ON CONFLICT (plan_id, action_id) DO UPDATE SET
     credit_cost = EXCLUDED.credit_cost,
     monthly_limit = EXCLUDED.monthly_limit,
-    daily_limit = EXCLUDED.daily_limit;
+    daily_limit = EXCLUDED.daily_limit,
+    is_active = EXCLUDED.is_active;
 
 -- Insert default categories (parent categories)
 INSERT INTO public.categories (id, name, description, sort_order) VALUES

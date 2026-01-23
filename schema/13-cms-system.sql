@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS public.cms_pages (
     is_active BOOLEAN DEFAULT true,
     metadata JSONB DEFAULT '{}',
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    content_fields JSONB DEFAULT '{}'
 );
 
 -- CMS Sections (hero, features, pricing, etc.)
@@ -106,37 +107,6 @@ CREATE INDEX IF NOT EXISTS idx_cms_legal_documents_version ON public.cms_legal_d
 CREATE INDEX IF NOT EXISTS idx_cms_translations_content_block_id ON public.cms_translations(content_block_id);
 CREATE INDEX IF NOT EXISTS idx_cms_translations_locale ON public.cms_translations(locale);
 CREATE INDEX IF NOT EXISTS idx_cms_translations_unique ON public.cms_translations(content_block_id, locale);
-
--- Triggers for updated_at columns
-CREATE TRIGGER update_cms_pages_updated_at 
-    BEFORE UPDATE ON public.cms_pages 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_cms_sections_updated_at 
-    BEFORE UPDATE ON public.cms_sections 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_cms_content_blocks_updated_at 
-    BEFORE UPDATE ON public.cms_content_blocks 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_cms_assets_updated_at 
-    BEFORE UPDATE ON public.cms_assets 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_cms_legal_documents_updated_at 
-    BEFORE UPDATE ON public.cms_legal_documents 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_cms_translations_updated_at 
-    BEFORE UPDATE ON public.cms_translations 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
 
 -- RLS Policies (admin-only access for now, will be refined in Phase 5)
 ALTER TABLE public.cms_pages ENABLE ROW LEVEL SECURITY;

@@ -26,13 +26,6 @@ CREATE INDEX IF NOT EXISTS idx_social_media_accounts_account_id ON public.social
 CREATE INDEX IF NOT EXISTS idx_social_media_accounts_is_active ON public.social_media_accounts(is_active);
 CREATE INDEX IF NOT EXISTS idx_social_media_accounts_created_at ON public.social_media_accounts(created_at);
 
--- Trigger for updated_at column
-DROP TRIGGER IF EXISTS update_social_media_accounts_updated_at ON public.social_media_accounts;
-CREATE TRIGGER update_social_media_accounts_updated_at 
-    BEFORE UPDATE ON public.social_media_accounts 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
 -- RLS (Row Level Security) policies
 ALTER TABLE public.social_media_accounts ENABLE ROW LEVEL SECURITY;
 

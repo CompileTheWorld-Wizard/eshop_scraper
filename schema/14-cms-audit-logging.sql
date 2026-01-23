@@ -59,10 +59,13 @@ BEGIN
     
     RETURN log_id;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public;
 
 -- RLS for audit log (admins can read, no one can write directly - only via function)
 ALTER TABLE public.cms_audit_log ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Admins can read cms_audit_log" ON public.cms_audit_log;
 
 CREATE POLICY "Admins can read cms_audit_log" ON public.cms_audit_log
     FOR SELECT USING (

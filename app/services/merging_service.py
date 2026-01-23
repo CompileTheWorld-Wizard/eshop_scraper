@@ -181,12 +181,48 @@ class MergingService:
             merged_size = os.path.getsize(merged_video_path) if os.path.exists(merged_video_path) else 0
             logger.info(f"[STEP 3] ✓ Videos merged successfully: {merged_video_path} ({merged_size / 1024 / 1024:.2f} MB)")
 
+            # Step 3.5: Fetch and download background music if available
+            music_files = []
+            logger.info(f"[STEP 3.5] Checking for background music...")
+            music_metadata = self._get_music_metadata(short_id)
+            if music_metadata:
+                temp_music_dir = tempfile.mkdtemp()
+                
+                # Download track1 if available
+                if music_metadata.get('track1'):
+                    track1 = music_metadata['track1']
+                    logger.info(f"[STEP 3.5] Downloading track1: {track1.get('name')} ({track1.get('genre')})")
+                    track1_path = self._download_music_file(track1.get('path'), temp_music_dir)
+                    if track1_path:
+                        music_files.append(track1_path)
+                        logger.info(f"[STEP 3.5] ✓ Track1 downloaded successfully")
+                    else:
+                        logger.warning(f"[STEP 3.5] ⚠ Failed to download track1")
+                
+                # Download track2 if available (for 48s videos)
+                if music_metadata.get('track2'):
+                    track2 = music_metadata['track2']
+                    logger.info(f"[STEP 3.5] Downloading track2: {track2.get('name')} ({track2.get('genre')})")
+                    track2_path = self._download_music_file(track2.get('path'), temp_music_dir)
+                    if track2_path:
+                        music_files.append(track2_path)
+                        logger.info(f"[STEP 3.5] ✓ Track2 downloaded successfully")
+                    else:
+                        logger.warning(f"[STEP 3.5] ⚠ Failed to download track2")
+                
+                if music_files:
+                    logger.info(f"[STEP 3.5] ✓ Downloaded {len(music_files)} background music track(s)")
+                else:
+                    logger.warning(f"[STEP 3.5] ⚠ No background music tracks downloaded")
+            else:
+                logger.info(f"[STEP 3.5] ⚠ No background music metadata found")
+
             # Step 4: Merge audio if available
             if audio_file:
                 logger.info(f"[STEP 4] Merging audio with video...")
                 logger.info(f"[STEP 4] Combining audio file with merged video...")
                 merged_video_path = self._merge_audio_with_video(
-                    merged_video_path, audio_file, task_id
+                    merged_video_path, audio_file, task_id, music_files
                 )
                 if merged_video_path:
                     merged_size = os.path.getsize(merged_video_path) if os.path.exists(merged_video_path) else 0
@@ -254,6 +290,11 @@ class MergingService:
             temp_files = video_files + [merged_video_path, final_video_path]
             if audio_file:
                 temp_files.append(audio_file)
+            
+            # Also clean up music files
+            if music_files:
+                temp_files.extend(music_files)
+                logger.info(f"[STEP 8] Including {len(music_files)} music file(s) in cleanup")
             
             # Also clean up any subtitle temporary directories
             if audio_data and audio_data.get('subtitles'):
@@ -364,6 +405,42 @@ class MergingService:
             # Don't fail the entire process if audio fetch fails
             return None
 
+    def _get_music_metadata(self, short_id: str) -> Optional[Dict[str, Any]]:
+        """Get background music metadata from shorts table."""
+        try:
+            if not supabase_manager.is_connected():
+                logger.warning("Supabase connection not available, skipping music metadata fetch")
+                return None
+
+            # Get shorts metadata for background music
+            shorts_result = supabase_manager.client.table('shorts').select(
+                'metadata'
+            ).eq('id', short_id).execute()
+
+            if not shorts_result.data:
+                logger.info(f"No shorts record found for short_id {short_id}")
+                return None
+
+            metadata = shorts_result.data[0].get('metadata', {})
+            
+            # Extract music info from metadata (it's nested under 'musicInfo')
+            music_info = metadata.get('musicInfo', {})
+            
+            # Check if metadata has music tracks
+            if not music_info or (not music_info.get('track1') and not music_info.get('track2')):
+                logger.info(f"No background music metadata found for short {short_id}")
+                return None
+
+            logger.info(f"Found background music metadata for short {short_id}: "
+                       f"track1={music_info.get('track1', {}).get('name', 'N/A')}, "
+                       f"track2={'Yes' if music_info.get('track2') else 'No'}")
+            return music_info
+
+        except Exception as e:
+            logger.error(f"Failed to fetch music metadata: {e}")
+            # Don't fail the entire process if music metadata fetch fails
+            return None
+
     # def _generate_thumbnail(self, user_id: str, product_info: Dict[str, Any], task_id: str, short_id: str) -> str:
     #     """Generate thumbnail using Vertex AI - REMOVED: No longer generating thumbnails."""
     #     # This method has been removed as thumbnail generation is no longer needed
@@ -393,6 +470,44 @@ class MergingService:
     #     """Update shorts table with thumbnail URL - REMOVED: No longer generating thumbnails."""
     #     # This method has been removed as thumbnail generation is no longer needed
     #     pass
+
+    def _download_music_file(self, music_path: str, temp_dir: str) -> Optional[str]:
+        """
+        Download background music file from Supabase storage.
+        
+        Args:
+            music_path: Path to music file in Supabase (e.g., 'Music/Classical/Eternal.mp3')
+            temp_dir: Temporary directory to save the downloaded file
+            
+        Returns:
+            Path to temporary music file, or None if download fails
+        """
+        try:
+            # Construct full Supabase URL for background music
+            base_url = f"{settings.SUPABASE_URL}/storage/v1/object/public/background-music"
+            music_url = f"{base_url}/{music_path}"
+            
+            logger.info(f"Downloading background music from: {music_url}")
+
+            # Download music file
+            with httpx.Client(timeout=DOWNLOAD_TIMEOUT) as client:
+                response = client.get(music_url)
+                response.raise_for_status()
+
+                # Save to temp file
+                music_filename = os.path.basename(music_path)
+                temp_music_path = os.path.join(temp_dir, music_filename)
+                
+                with open(temp_music_path, 'wb') as f:
+                    f.write(response.content)
+
+            file_size = os.path.getsize(temp_music_path)
+            logger.info(f"Successfully downloaded background music: {temp_music_path} ({file_size / 1024:.2f} KB)")
+            return temp_music_path
+
+        except Exception as e:
+            logger.error(f"Failed to download background music from {music_path}: {e}")
+            return None
 
     def _download_audio(self, audio_url: str, task_id: str) -> str:
         """
@@ -1094,15 +1209,26 @@ class MergingService:
             return 30
 
 
-    def _merge_audio_with_video(self, video_path: str, audio_path: str, task_id: str) -> str:
-        """Merge audio with video using FFmpeg, properly mixing video sound effects with voice script."""
+    def _merge_audio_with_video(self, video_path: str, audio_path: str, task_id: str, music_files: List[str] = None) -> str:
+        """
+        Merge audio with video using FFmpeg, mixing video sound effects, voice script, and optional background music.
+        
+        Args:
+            video_path: Path to the video file
+            audio_path: Path to the voice audio file
+            task_id: Task ID for logging
+            music_files: Optional list of background music file paths (1 or 2 tracks)
+            
+        Returns:
+            Path to the merged video file
+        """
         try:
             # First check if the video has an audio stream
             has_audio = self._check_video_has_audio(video_path)
             
             if not has_audio:
                 logger.info("Video has no audio stream, using voice-only approach")
-                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id, music_files)
 
             # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
@@ -1111,23 +1237,66 @@ class MergingService:
             # Get video duration for proper audio mixing
             video_duration = self._get_video_duration(video_path)
 
-            # Merge audio with video using FFmpeg with proper audio mixing
-            # This command will:
-            # 1. Take video (with its sound effects) as input 0
-            # 2. Take voice script audio as input 1
-            # 3. Mix both audio streams using amix filter with volume adjustments
-            # 4. Ensure the output duration matches the longest input duration (using duration=longest in filter)
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,      # Input 0: video with sound effects
-                '-i', audio_path,      # Input 1: voice script audio
-                '-c:v', 'copy',        # Copy video codec without re-encoding
-                '-filter_complex', f'[0:a]volume=0.3[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',  # Mix with volume adjustments, duration=longest ensures output matches longest input
-                '-map', '0:v',         # Map video from first input
-                '-map', '[out]',       # Map the mixed audio output
-                '-c:a', 'aac',         # Convert mixed audio to AAC
-                merged_path
-            ]
+            # Build FFmpeg command based on available inputs
+            if music_files and len(music_files) > 0:
+                logger.info(f"Merging with background music: {len(music_files)} track(s)")
+                
+                # Merge audio with video including background music
+                if len(music_files) == 1:
+                    # Single music track (24s video)
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,      # Input 0: video with sound effects
+                        '-i', audio_path,      # Input 1: voice script audio
+                        '-i', music_files[0],  # Input 2: background music
+                        '-c:v', 'copy',        # Copy video codec without re-encoding
+                        '-filter_complex', 
+                        '[0:a]volume=0.2[vid_audio];'
+                        '[1:a]volume=1.0[voice_audio];'
+                        '[2:a]volume=0.4[bg_music];'
+                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v',         # Map video from first input
+                        '-map', '[out]',       # Map the mixed audio output
+                        '-c:a', 'aac',         # Convert mixed audio to AAC
+                        merged_path
+                    ]
+                else:
+                    # Two music tracks (48s video) - concatenate them first
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,      # Input 0: video with sound effects
+                        '-i', audio_path,      # Input 1: voice script audio
+                        '-i', music_files[0],  # Input 2: background music track1
+                        '-i', music_files[1],  # Input 3: background music track2
+                        '-c:v', 'copy',        # Copy video codec without re-encoding
+                        '-filter_complex',
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
+                        '[0:a]volume=0.2[vid_audio];'
+                        '[1:a]volume=1.0[voice_audio];'
+                        '[bgmusic]volume=0.4[bg_audio];'
+                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v',         # Map video from first input
+                        '-map', '[out]',       # Map the mixed audio output
+                        '-c:a', 'aac',         # Convert mixed audio to AAC
+                        merged_path
+                    ]
+            else:
+                # No background music - original behavior
+                logger.info("Merging without background music")
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', video_path,      # Input 0: video with sound effects
+                    '-i', audio_path,      # Input 1: voice script audio
+                    '-c:v', 'copy',        # Copy video codec without re-encoding
+                    '-filter_complex', 
+                    '[0:a]volume=0.3[vid_audio];'
+                    '[1:a]volume=1.0[voice_audio];'
+                    '[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                    '-map', '0:v',         # Map video from first input
+                    '-map', '[out]',       # Map the mixed audio output
+                    '-c:a', 'aac',         # Convert mixed audio to AAC
+                    merged_path
+                ]
 
             result = subprocess.run(
                 cmd,
@@ -1139,7 +1308,7 @@ class MergingService:
             if result.returncode != 0:
                 # If the complex filter fails, try a simpler approach
                 logger.warning(f"Complex audio mixing failed, trying simpler approach: {result.stderr}")
-                return self._merge_audio_with_video_simple(video_path, audio_path, task_id)
+                return self._merge_audio_with_video_simple(video_path, audio_path, task_id, music_files)
 
             if not os.path.exists(merged_path):
                 raise Exception("Audio-merged video file was not created")
@@ -1151,7 +1320,7 @@ class MergingService:
             logger.error(f"Failed to merge audio with video: {e}")
             raise
 
-    def _merge_audio_with_video_simple(self, video_path: str, audio_path: str, task_id: str) -> str:
+    def _merge_audio_with_video_simple(self, video_path: str, audio_path: str, task_id: str, music_files: List[str] = None) -> str:
         """Fallback method for merging audio with video using a simpler approach."""
         try:
             # First check if the video has an audio stream
@@ -1159,24 +1328,65 @@ class MergingService:
             
             if not has_audio:
                 logger.info("Video has no audio stream, using voice-only approach")
-                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id, music_files)
 
             # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_simple.mp4")
 
-            # Simpler approach: mix audio streams using amix with volume adjustments
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,      # Input 0: video with sound effects
-                '-i', audio_path,      # Input 1: voice script audio
-                '-c:v', 'copy',        # Copy video codec
-                '-filter_complex', '[0:a]volume=0.5[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2[out]',  # Mix with volume adjustments
-                '-map', '0:v',         # Map video from first input
-                '-map', '[out]',       # Map the mixed audio output
-                '-c:a', 'aac',         # Convert mixed audio to AAC
-                merged_path
-            ]
+            # Build simpler FFmpeg command
+            if music_files and len(music_files) > 0:
+                logger.info(f"Simple merge with background music: {len(music_files)} track(s)")
+                
+                if len(music_files) == 1:
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,
+                        '-i', audio_path,
+                        '-i', music_files[0],
+                        '-c:v', 'copy',
+                        '-filter_complex',
+                        '[0:a]volume=0.3[vid_audio];'
+                        '[1:a]volume=1.0[voice_audio];'
+                        '[2:a]volume=0.4[bg_music];'
+                        '[vid_audio][voice_audio][bg_music]amix=inputs=3[out]',
+                        '-map', '0:v',
+                        '-map', '[out]',
+                        '-c:a', 'aac',
+                        merged_path
+                    ]
+                else:
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,
+                        '-i', audio_path,
+                        '-i', music_files[0],
+                        '-i', music_files[1],
+                        '-c:v', 'copy',
+                        '-filter_complex',
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
+                        '[0:a]volume=0.3[vid_audio];'
+                        '[1:a]volume=1.0[voice_audio];'
+                        '[bgmusic]volume=0.4[bg_audio];'
+                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3[out]',
+                        '-map', '0:v',
+                        '-map', '[out]',
+                        '-c:a', 'aac',
+                        merged_path
+                    ]
+            else:
+                # Simpler approach: mix audio streams using amix with volume adjustments
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', video_path,      # Input 0: video with sound effects
+                    '-i', audio_path,      # Input 1: voice script audio
+                    '-c:v', 'copy',        # Copy video codec
+                    '-filter_complex', '[0:a]volume=0.5[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2[out]',  # Mix with volume adjustments
+                    '-map', '0:v',         # Map video from first input
+                    '-map', '[out]',       # Map the mixed audio output
+                    '-c:a', 'aac',         # Convert mixed audio to AAC
+                    merged_path
+                ]
 
             result = subprocess.run(
                 cmd,
@@ -1188,7 +1398,7 @@ class MergingService:
             if result.returncode != 0:
                 # If even the simple approach fails, try the voice-priority method
                 logger.warning(f"Simple audio mixing failed, trying voice-priority approach: {result.stderr}")
-                return self._merge_audio_with_video_voice_priority(video_path, audio_path, task_id)
+                return self._merge_audio_with_video_voice_priority(video_path, audio_path, task_id, music_files)
 
             if not os.path.exists(merged_path):
                 raise Exception("Audio-merged video file was not created")
@@ -1200,34 +1410,76 @@ class MergingService:
             logger.error(f"Failed to merge audio with video (simple): {e}")
             raise
 
-    def _merge_audio_with_video_voice_priority(self, video_path: str, audio_path: str, task_id: str) -> str:
+    def _merge_audio_with_video_voice_priority(self, video_path: str, audio_path: str, task_id: str, music_files: List[str] = None) -> str:
         """Voice-priority fallback method for merging audio with video."""
         try:
             # First check if the video has an audio stream
             has_audio = self._check_video_has_audio(video_path)
             
             if not has_audio:
-                logger.info("Video has no audio stream, using voice-only approach")
-                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+                logger.info("Video has no audio stream, using basic approach")
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id, music_files)
 
             # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_voice_priority.mp4")
 
-            # Voice-priority approach: prioritize voice script over video audio
-            # This method tries to mix but gives priority to the voice script
-            # duration=longest ensures output matches longest input (video or audio)
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,      # Input 0: video with sound effects
-                '-i', audio_path,      # Input 1: voice script audio
-                '-c:v', 'copy',        # Copy video codec
-                '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',  # Mix with voice priority, duration=longest ensures output matches longest input
-                '-map', '0:v',         # Map video from first input
-                '-map', '[out]',       # Map the mixed audio output
-                '-c:a', 'aac',         # Convert mixed audio to AAC
-                merged_path
-            ]
+            # Build FFmpeg command based on whether we have background music
+            if music_files and len(music_files) > 0:
+                logger.info(f"Voice-priority merge with background music: {len(music_files)} track(s)")
+                
+                if len(music_files) == 1:
+                    # Video sound + voice + single music track
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,       # Input 0: video with sound effects
+                        '-i', audio_path,       # Input 1: voice audio
+                        '-i', music_files[0],   # Input 2: background music
+                        '-filter_complex',
+                        '[0:a]volume=0.15[vid_audio];'
+                        '[1:a]volume=1.0[voice];'
+                        '[2:a]volume=0.4[music];'
+                        '[vid_audio][voice][music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v',
+                        '-map', '[out]',
+                        '-c:v', 'copy',
+                        '-c:a', 'aac',
+                        merged_path
+                    ]
+                else:
+                    # Video sound + voice + two music tracks
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,       # Input 0: video with sound effects
+                        '-i', audio_path,       # Input 1: voice audio
+                        '-i', music_files[0],   # Input 2: background music track1
+                        '-i', music_files[1],   # Input 3: background music track2
+                        '-filter_complex',
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
+                        '[0:a]volume=0.15[vid_audio];'
+                        '[1:a]volume=1.0[voice];'
+                        '[bgmusic]volume=0.4[music];'
+                        '[vid_audio][voice][music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v',
+                        '-map', '[out]',
+                        '-c:v', 'copy',
+                        '-c:a', 'aac',
+                        merged_path
+                    ]
+            else:
+                # No background music - voice-priority approach (original)
+                logger.info("Voice-priority merge: video sound + voice (no background music)")
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', video_path,      # Input 0: video with sound effects
+                    '-i', audio_path,      # Input 1: voice script audio
+                    '-c:v', 'copy',        # Copy video codec
+                    '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                    '-map', '0:v',         # Map video from first input
+                    '-map', '[out]',       # Map the mixed audio output
+                    '-c:a', 'aac',         # Convert mixed audio to AAC
+                    merged_path
+                ]
 
             result = subprocess.run(
                 cmd,
@@ -1237,40 +1489,83 @@ class MergingService:
             )
 
             if result.returncode != 0:
-                # If voice-priority mixing fails, fall back to basic approach
-                logger.warning(f"Voice-priority audio mixing failed, trying basic approach: {result.stderr}")
-                return self._merge_audio_with_video_basic(video_path, audio_path, task_id)
+                # If this fails too, try the basic approach
+                logger.warning(f"Voice-priority mixing failed, trying basic approach: {result.stderr}")
+                return self._merge_audio_with_video_basic(video_path, audio_path, task_id, music_files)
 
             if not os.path.exists(merged_path):
                 raise Exception("Audio-merged video file was not created")
 
-            logger.info(f"Successfully merged audio with video using voice-priority approach")
+            if music_files and len(music_files) > 0:
+                logger.info(f"Successfully merged audio with video using voice-priority (with {len(music_files)} music track(s))")
+            else:
+                logger.info(f"Successfully merged audio with video using voice-priority")
             return merged_path
 
         except Exception as e:
             logger.error(f"Failed to merge audio with video (voice-priority): {e}")
             raise
 
-    def _merge_audio_with_video_basic(self, video_path: str, audio_path: str, task_id: str) -> str:
+    def _merge_audio_with_video_basic(self, video_path: str, audio_path: str, task_id: str, music_files: List[str] = None) -> str:
         """Most basic fallback method for merging audio with video."""
         try:
             # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_basic.mp4")
 
-            # Most basic approach: just replace video audio with voice script
-            # This is the original behavior but with better error handling
-            # FFmpeg will automatically match the longest stream duration (default behavior)
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', video_path,
-                '-i', audio_path,
-                '-c:v', 'copy',        # Copy video codec
-                '-c:a', 'aac',         # Convert audio to AAC
-                '-map', '0:v',         # Map video from first input
-                '-map', '1:a',         # Map audio from second input (voice script)
-                merged_path
-            ]
+            # Build FFmpeg command based on whether we have background music
+            if music_files and len(music_files) > 0:
+                logger.info(f"Basic merge with background music: {len(music_files)} track(s)")
+                
+                if len(music_files) == 1:
+                    # Voice + single music track (24s video)
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,       # Input 0: video (no audio or we ignore it)
+                        '-i', audio_path,       # Input 1: voice audio
+                        '-i', music_files[0],   # Input 2: background music
+                        '-filter_complex',
+                        '[1:a]volume=1.0[voice];'
+                        '[2:a]volume=0.4[music];'
+                        '[voice][music]amix=inputs=2:duration=longest[out]',
+                        '-map', '0:v',          # Map video from first input
+                        '-map', '[out]',        # Map mixed audio
+                        '-c:v', 'copy',         # Copy video codec
+                        '-c:a', 'aac',          # Convert audio to AAC
+                        merged_path
+                    ]
+                else:
+                    # Voice + two music tracks (48s video) - concatenate music first
+                    cmd = [
+                        'ffmpeg', '-y',
+                        '-i', video_path,       # Input 0: video (no audio or we ignore it)
+                        '-i', audio_path,       # Input 1: voice audio
+                        '-i', music_files[0],   # Input 2: background music track1
+                        '-i', music_files[1],   # Input 3: background music track2
+                        '-filter_complex',
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
+                        '[1:a]volume=1.0[voice];'
+                        '[bgmusic]volume=0.4[music];'
+                        '[voice][music]amix=inputs=2:duration=longest[out]',
+                        '-map', '0:v',          # Map video from first input
+                        '-map', '[out]',        # Map mixed audio
+                        '-c:v', 'copy',         # Copy video codec
+                        '-c:a', 'aac',          # Convert audio to AAC
+                        merged_path
+                    ]
+            else:
+                # No background music - voice only (original behavior)
+                logger.info("Basic merge: voice only (no background music)")
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-i', video_path,
+                    '-i', audio_path,
+                    '-c:v', 'copy',        # Copy video codec
+                    '-c:a', 'aac',         # Convert audio to AAC
+                    '-map', '0:v',         # Map video from first input
+                    '-map', '1:a',         # Map audio from second input (voice script)
+                    merged_path
+                ]
 
             result = subprocess.run(
                 cmd,
@@ -1285,7 +1580,10 @@ class MergingService:
             if not os.path.exists(merged_path):
                 raise Exception("Audio-merged video file was not created")
 
-            logger.info(f"Successfully merged audio with video using basic approach (voice only)")
+            if music_files and len(music_files) > 0:
+                logger.info(f"Successfully merged audio with video using basic approach (voice + {len(music_files)} music track(s))")
+            else:
+                logger.info(f"Successfully merged audio with video using basic approach (voice only)")
             return merged_path
 
         except Exception as e:

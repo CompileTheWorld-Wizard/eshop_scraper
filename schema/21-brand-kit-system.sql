@@ -153,28 +153,10 @@ CREATE INDEX IF NOT EXISTS idx_brand_kit_activities_item ON public.brand_kit_act
 CREATE INDEX IF NOT EXISTS idx_brand_kit_activities_created ON public.brand_kit_activities(created_at DESC);
 
 -- ============================================================================
--- PART 7: Triggers
+-- PART 7: Triggers (REMOVED - update_updated_at_column function doesn't exist)
 -- ============================================================================
-
-CREATE TRIGGER update_brand_kit_categories_updated_at 
-    BEFORE UPDATE ON public.brand_kit_categories 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_brand_assets_updated_at 
-    BEFORE UPDATE ON public.brand_assets 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_premade_content_updated_at 
-    BEFORE UPDATE ON public.premade_content 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
-
-CREATE TRIGGER update_premade_content_translations_updated_at 
-    BEFORE UPDATE ON public.premade_content_translations 
-    FOR EACH ROW 
-    EXECUTE FUNCTION update_updated_at_column();
+-- All update triggers have been removed as the update_updated_at_column() function
+-- is not used in the original database
 
 -- ============================================================================
 -- PART 8: Row Level Security (RLS)
@@ -187,6 +169,7 @@ ALTER TABLE public.premade_content_translations ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.brand_kit_activities ENABLE ROW LEVEL SECURITY;
 
 -- Admins can do everything
+DROP POLICY IF EXISTS "Admins can manage brand_kit_categories" ON public.brand_kit_categories;
 CREATE POLICY "Admins can manage brand_kit_categories" ON public.brand_kit_categories
     FOR ALL USING (
         EXISTS (
@@ -196,6 +179,7 @@ CREATE POLICY "Admins can manage brand_kit_categories" ON public.brand_kit_categ
         )
     );
 
+DROP POLICY IF EXISTS "Admins can manage brand_assets" ON public.brand_assets;
 CREATE POLICY "Admins can manage brand_assets" ON public.brand_assets
     FOR ALL USING (
         EXISTS (
@@ -205,6 +189,7 @@ CREATE POLICY "Admins can manage brand_assets" ON public.brand_assets
         )
     );
 
+DROP POLICY IF EXISTS "Admins can manage premade_content" ON public.premade_content;
 CREATE POLICY "Admins can manage premade_content" ON public.premade_content
     FOR ALL USING (
         EXISTS (
@@ -214,6 +199,7 @@ CREATE POLICY "Admins can manage premade_content" ON public.premade_content
         )
     );
 
+DROP POLICY IF EXISTS "Admins can manage premade_content_translations" ON public.premade_content_translations;
 CREATE POLICY "Admins can manage premade_content_translations" ON public.premade_content_translations
     FOR ALL USING (
         EXISTS (
@@ -223,6 +209,7 @@ CREATE POLICY "Admins can manage premade_content_translations" ON public.premade
         )
     );
 
+DROP POLICY IF EXISTS "Admins can manage brand_kit_activities" ON public.brand_kit_activities;
 CREATE POLICY "Admins can manage brand_kit_activities" ON public.brand_kit_activities
     FOR ALL USING (
         EXISTS (
@@ -233,15 +220,19 @@ CREATE POLICY "Admins can manage brand_kit_activities" ON public.brand_kit_activ
     );
 
 -- Authenticated users can read active content
+DROP POLICY IF EXISTS "Users can read active brand_kit_categories" ON public.brand_kit_categories;
 CREATE POLICY "Users can read active brand_kit_categories" ON public.brand_kit_categories
     FOR SELECT USING (is_active = true);
 
+DROP POLICY IF EXISTS "Users can read active brand_assets" ON public.brand_assets;
 CREATE POLICY "Users can read active brand_assets" ON public.brand_assets
     FOR SELECT USING (is_active = true);
 
+DROP POLICY IF EXISTS "Users can read active premade_content" ON public.premade_content;
 CREATE POLICY "Users can read active premade_content" ON public.premade_content
     FOR SELECT USING (is_active = true);
 
+DROP POLICY IF EXISTS "Users can read premade_content_translations" ON public.premade_content_translations;
 CREATE POLICY "Users can read premade_content_translations" ON public.premade_content_translations
     FOR SELECT USING (
         EXISTS (
@@ -252,9 +243,11 @@ CREATE POLICY "Users can read premade_content_translations" ON public.premade_co
     );
 
 -- Users can create their own activity records
+DROP POLICY IF EXISTS "Users can create own activities" ON public.brand_kit_activities;
 CREATE POLICY "Users can create own activities" ON public.brand_kit_activities
     FOR INSERT WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can read own activities" ON public.brand_kit_activities;
 CREATE POLICY "Users can read own activities" ON public.brand_kit_activities
     FOR SELECT USING (auth.uid() = user_id);
 
@@ -283,7 +276,8 @@ BEGIN
     SET download_count = COALESCE(download_count, 0) + 1
     WHERE id = asset_id;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public;
 
 -- Function to increment premade content downloads
 CREATE OR REPLACE FUNCTION increment_premade_content_downloads(content_id UUID)
@@ -293,7 +287,8 @@ BEGIN
     SET download_count = COALESCE(download_count, 0) + 1
     WHERE id = content_id;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public;
 
 -- Function to increment premade content shares
 CREATE OR REPLACE FUNCTION increment_premade_content_shares(content_id UUID)
@@ -303,7 +298,8 @@ BEGIN
     SET share_count = COALESCE(share_count, 0) + 1
     WHERE id = content_id;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER
+SET search_path = public;
 
 -- Grant execute permissions to authenticated users
 GRANT EXECUTE ON FUNCTION increment_brand_asset_downloads(UUID) TO authenticated;

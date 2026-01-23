@@ -68,6 +68,36 @@ CREATE INDEX IF NOT EXISTS idx_user_referrals_referred_user ON public.user_refer
 CREATE INDEX IF NOT EXISTS idx_user_referrals_referrer_user ON public.user_referrals(referrer_user);
 CREATE INDEX IF NOT EXISTS idx_user_referrals_created_at ON public.user_referrals(created_at);
 
+-- Row Level Security for user_referrals table
+ALTER TABLE public.user_referrals ENABLE ROW LEVEL SECURITY;
+
+-- Users can view their own referral data
+CREATE POLICY "Users can view their own referral data" ON public.user_referrals
+FOR SELECT
+USING (auth.uid() = referred_user OR auth.uid() = referrer_user);
+
+-- Admins can manage referrals
+CREATE POLICY "Admins can manage referrals" ON public.user_referrals
+FOR ALL
+USING (
+    EXISTS (
+        SELECT 1 FROM public.user_profiles
+        WHERE user_profiles.user_id = auth.uid()
+        AND user_profiles.role = 'admin'
+    )
+)
+WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM public.user_profiles
+        WHERE user_profiles.user_id = auth.uid()
+        AND user_profiles.role = 'admin'
+    )
+);
+
+-- Grant permissions
+GRANT SELECT ON public.user_referrals TO authenticated;
+GRANT ALL ON public.user_referrals TO service_role;
+
 -- Add comments for documentation
 COMMENT ON TABLE public.user_referrals IS 'Tracks referral relationships between users';
 COMMENT ON COLUMN public.user_referrals.referred_user IS 'The user who was referred (new user)';

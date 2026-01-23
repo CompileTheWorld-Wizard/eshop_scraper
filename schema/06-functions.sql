@@ -1,15 +1,6 @@
 -- Auto-Promo AI Database Functions
 -- Utility functions for the application
 
--- Function to update updated_at column automatically
-CREATE OR REPLACE FUNCTION update_updated_at_column()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = NOW();
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 -- Function to get user credits
 CREATE OR REPLACE FUNCTION get_user_credits(user_uuid UUID)
 RETURNS TABLE(
@@ -33,7 +24,9 @@ BEGIN
     LEFT JOIN public.subscription_plans sp ON us.plan_id = sp.id
     WHERE u.id = user_uuid;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public;
 
 -- Function to get user status
 CREATE OR REPLACE FUNCTION get_user_status(user_uuid UUID)
@@ -75,7 +68,9 @@ BEGIN
     LEFT JOIN public.subscription_plans sp ON us.plan_id = sp.id
     WHERE u.id = user_uuid;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public;
 
 -- Function to check if user can perform an action (consolidated from migrations 15, 20)
 CREATE OR REPLACE FUNCTION can_perform_action(
@@ -343,7 +338,8 @@ BEGIN
         monthly_used_val AS monthly_used,
         daily_used_val AS daily_used;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Function to deduct user credits (consolidated from migrations 15, 20, 21, 22, 23, 29)
 -- Latest version includes FIFO logic for subscription vs addon credits
@@ -580,7 +576,8 @@ BEGIN
     
     RETURN TRUE;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Function to add user credits (consolidated from migrations 14, 20, 21, 22, 32, 34)
 -- Latest version maintains subscription/addon credit consistency
@@ -735,7 +732,8 @@ BEGIN
     -- Return credits_total and credits_remaining (stored directly)
     RETURN QUERY SELECT new_total, new_remaining;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Grant execute permission to authenticated users
 GRANT EXECUTE ON FUNCTION add_user_credits(UUID, INTEGER, TEXT, TEXT, TEXT, JSONB) TO authenticated;
@@ -748,7 +746,8 @@ BEGIN
     SET views = views + 1
     WHERE id = video_uuid;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Function to increment video downloads
 CREATE OR REPLACE FUNCTION increment_video_downloads(video_uuid UUID)
@@ -758,7 +757,8 @@ BEGIN
     SET downloads = downloads + 1
     WHERE id = video_uuid;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Function to sync user credits to profile (consolidated from migration 34)
 -- Uses explicit table aliases to avoid ambiguous column references
@@ -786,7 +786,8 @@ BEGIN
         WHERE user_id = user_uuid;
     END IF;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Function to sync all user credits (for admin use)
 CREATE OR REPLACE FUNCTION sync_all_user_credits()
@@ -805,7 +806,8 @@ BEGIN
     
     RETURN synced_count;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Trigger to automatically sync credits when user_credits table is updated
 CREATE OR REPLACE FUNCTION trigger_sync_user_credits()
@@ -815,7 +817,8 @@ BEGIN
     PERFORM sync_user_credits_to_profile(NEW.user_id);
     RETURN NEW;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Function to initialize user on signup with free plan
 CREATE OR REPLACE FUNCTION initialize_user_on_signup(
@@ -904,7 +907,8 @@ BEGIN
     
     RETURN true;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Create trigger on user_credits table
 DROP TRIGGER IF EXISTS sync_user_credits_trigger ON public.user_credits;
@@ -1064,8 +1068,393 @@ BEGIN
     
     RETURN true;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Add comment to document the function
 COMMENT ON FUNCTION reset_subscription_credits_on_renewal(UUID) IS 
-'Resets subscription credits on billing cycle renewal. Sets subscription_credits_remaining to plan monthly_credits, expires all addon credits, and resets cycle tracking. Unused credits do NOT roll over.'; 
+'Resets subscription credits on billing cycle renewal. Sets subscription_credits_remaining to plan monthly_credits, expires all addon credits, and resets cycle tracking. Unused credits do NOT roll over.';
+
+-- ============================================================================
+-- MISSING FUNCTIONS FROM ORIGINAL DATABASE
+-- ============================================================================
+
+-- Function: ensure_target_language_case
+-- Description: Trigger function to ensure target_language is stored as provided (case-sensitive)
+CREATE OR REPLACE FUNCTION public.ensure_target_language_case()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    -- Ensure the target_language is stored exactly as provided (case-sensitive)
+    NEW.target_language = NEW.target_language;
+    RETURN NEW;
+END;
+$$;
+
+-- Function: ensure_user_has_credits
+-- Description: Ensures user has credits record (legacy - creates basic credits)
+CREATE OR REPLACE FUNCTION public.ensure_user_has_credits(user_uuid UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    existing_credits_count INTEGER;
+BEGIN
+    -- Check if user already has credits
+    SELECT COUNT(*) INTO existing_credits_count
+    FROM public.user_credits
+    WHERE user_id = user_uuid;
+    
+    -- If no credits exist, create them
+    IF existing_credits_count = 0 THEN
+        INSERT INTO public.user_credits (
+            user_id,
+            total_credits,
+            used_credits
+        ) VALUES (
+            user_uuid,
+            10, -- Free tier credits
+            0
+        );
+        
+        RETURN true;
+    END IF;
+    
+    RETURN false;
+END;
+$$;
+
+-- Function: ensure_user_has_free_plan
+-- Description: Ensures user has free plan subscription
+CREATE OR REPLACE FUNCTION public.ensure_user_has_free_plan(user_uuid UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    free_plan_id UUID;
+    existing_subscription_count INTEGER;
+    user_email TEXT;
+BEGIN
+    -- Get user email
+    SELECT email INTO user_email
+    FROM auth.users
+    WHERE id = user_uuid;
+    
+    -- Get the free plan ID
+    SELECT id INTO free_plan_id
+    FROM public.subscription_plans
+    WHERE name = 'free' AND is_active = true
+    LIMIT 1;
+    
+    -- Check if user already has a subscription
+    SELECT COUNT(*) INTO existing_subscription_count
+    FROM public.user_subscriptions
+    WHERE user_id = user_uuid AND status = 'active';
+    
+    -- If no active subscription and free plan exists, create one
+    IF existing_subscription_count = 0 AND free_plan_id IS NOT NULL THEN
+        INSERT INTO public.user_subscriptions (
+            user_id,
+            plan_id,
+            status,
+            current_period_start,
+            current_period_end,
+            cancel_at_period_end
+        ) VALUES (
+            user_uuid,
+            free_plan_id,
+            'active',
+            NOW(),
+            NOW() + INTERVAL '1 year',
+            false
+        );
+        
+        -- Log the activity
+        INSERT INTO public.user_activities (
+            user_id,
+            action,
+            resource_type,
+            resource_id,
+            details
+        ) VALUES (
+            user_uuid,
+            'free_plan_assigned',
+            'subscription',
+            free_plan_id,
+            jsonb_build_object(
+                'email', user_email,
+                'plan', 'free',
+                'reason', 'migration_ensure_free_plan'
+            )
+        );
+        
+        RETURN true;
+    END IF;
+    
+    RETURN false;
+END;
+$$;
+
+-- Function: ensure_user_has_profile
+-- Description: Ensures user has profile record
+CREATE OR REPLACE FUNCTION public.ensure_user_has_profile(user_uuid UUID)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    existing_profile_count INTEGER;
+    user_email TEXT;
+BEGIN
+    -- Get user email
+    SELECT email INTO user_email
+    FROM auth.users
+    WHERE id = user_uuid;
+    
+    -- Check if user already has a profile
+    SELECT COUNT(*) INTO existing_profile_count
+    FROM public.user_profiles
+    WHERE user_id = user_uuid;
+    
+    -- If no profile exists, create one
+    IF existing_profile_count = 0 THEN
+        INSERT INTO public.user_profiles (
+            user_id,
+            email,
+            role,
+            is_active,
+            credits_total,
+            credits_remaining
+        ) VALUES (
+            user_uuid,
+            user_email,
+            'user',
+            true,
+            10, -- Free tier credits
+            10
+        );
+        
+        RETURN true;
+    END IF;
+    
+    RETURN false;
+END;
+$$;
+
+-- Function: get_all_active_plans
+-- Description: Returns all active subscription plans
+CREATE OR REPLACE FUNCTION public.get_all_active_plans()
+RETURNS TABLE(
+    id UUID,
+    name TEXT,
+    display_name TEXT,
+    description TEXT,
+    price_monthly DECIMAL,
+    price_yearly DECIMAL,
+    monthly_credits INTEGER,
+    is_active BOOLEAN
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        sp.id,
+        sp.name,
+        sp.display_name,
+        sp.description,
+        sp.price_monthly,
+        sp.price_yearly,
+        sp.monthly_credits,
+        sp.is_active
+    FROM public.subscription_plans sp
+    WHERE sp.is_active = true
+    ORDER BY sp.price_monthly ASC;
+END;
+$$;
+
+-- Function: get_plan_by_name
+-- Description: Returns subscription plan by name
+CREATE OR REPLACE FUNCTION public.get_plan_by_name(plan_name TEXT)
+RETURNS TABLE(
+    id UUID,
+    name TEXT,
+    display_name TEXT,
+    description TEXT,
+    price_monthly DECIMAL,
+    price_yearly DECIMAL,
+    monthly_credits INTEGER,
+    is_active BOOLEAN
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        sp.id,
+        sp.name,
+        sp.display_name,
+        sp.description,
+        sp.price_monthly,
+        sp.price_yearly,
+        sp.monthly_credits,
+        sp.is_active
+    FROM public.subscription_plans sp
+    WHERE sp.name = plan_name AND sp.is_active = true;
+END;
+$$;
+
+-- Function: get_plan_credit_configs_with_actions
+-- Description: Returns plan credit configs with action details
+CREATE OR REPLACE FUNCTION public.get_plan_credit_configs_with_actions(plan_uuid UUID)
+RETURNS TABLE(
+    id UUID,
+    plan_id UUID,
+    action_id UUID,
+    credit_cost INTEGER,
+    monthly_limit INTEGER,
+    daily_limit INTEGER,
+    is_active BOOLEAN,
+    action_name TEXT,
+    display_name TEXT,
+    description TEXT
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+BEGIN
+    RETURN QUERY
+    SELECT 
+        pcc.id,
+        pcc.plan_id,
+        pcc.action_id,
+        pcc.credit_cost,
+        pcc.monthly_limit,
+        pcc.daily_limit,
+        pcc.is_active,
+        ca.action_name,
+        ca.display_name,
+        ca.description
+    FROM public.plan_credit_configs pcc
+    JOIN public.credit_actions ca ON pcc.action_id = ca.id
+    WHERE pcc.plan_id = plan_uuid AND pcc.is_active = true AND ca.is_active = true
+    ORDER BY ca.action_name;
+END;
+$$;
+
+-- Function: handle_new_user_signup
+-- Description: Trigger function to handle new user signup (auth.users trigger)
+CREATE OR REPLACE FUNCTION public.handle_new_user_signup()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public
+AS $$
+DECLARE
+    free_plan_id UUID;
+    user_email TEXT;
+BEGIN
+    -- Get user email from the NEW record
+    user_email := NEW.email;
+    
+    -- Get the free plan ID
+    SELECT id INTO free_plan_id
+    FROM public.subscription_plans
+    WHERE name = 'free' AND is_active = true
+    LIMIT 1;
+    
+    -- Create user profile if it doesn't exist
+    INSERT INTO public.user_profiles (
+        user_id,
+        email,
+        role,
+        is_active,
+        credits_total,
+        credits_remaining
+    ) VALUES (
+        NEW.id,
+        user_email,
+        'user',
+        true,
+        10, -- Free tier credits
+        10
+    )
+    ON CONFLICT (user_id) DO NOTHING;
+    
+    -- Create user subscription for free plan if it doesn't exist
+    IF free_plan_id IS NOT NULL THEN
+        INSERT INTO public.user_subscriptions (
+            user_id,
+            plan_id,
+            status,
+            current_period_start,
+            current_period_end,
+            cancel_at_period_end
+        ) VALUES (
+            NEW.id,
+            free_plan_id,
+            'active',
+            NOW(),
+            NOW() + INTERVAL '1 year', -- 1 year from now
+            false
+        )
+        ON CONFLICT (user_id) DO NOTHING;
+    END IF;
+    
+    -- Initialize user credits if they don't exist
+    INSERT INTO public.user_credits (
+        user_id,
+        total_credits,
+        used_credits
+    ) VALUES (
+        NEW.id,
+        10, -- Free tier credits
+        0
+    )
+    ON CONFLICT (user_id) DO NOTHING;
+    
+    -- Log the user registration activity
+    INSERT INTO public.user_activities (
+        user_id,
+        action,
+        resource_type,
+        resource_id,
+        details
+    ) VALUES (
+        NEW.id,
+        'user_registered',
+        'user',
+        NEW.id,
+        jsonb_build_object(
+            'email', user_email,
+            'plan', 'free',
+            'signup_method', 'email'
+        )
+    );
+    
+    RETURN NEW;
+END;
+$$;
+
+-- Add comments
+COMMENT ON FUNCTION ensure_target_language_case() IS 'Trigger function to preserve target_language case sensitivity';
+COMMENT ON FUNCTION ensure_user_has_credits(UUID) IS 'Legacy function - ensures user has credits record';
+COMMENT ON FUNCTION ensure_user_has_free_plan(UUID) IS 'Ensures user has free plan subscription';
+COMMENT ON FUNCTION ensure_user_has_profile(UUID) IS 'Ensures user has profile record';
+COMMENT ON FUNCTION get_all_active_plans() IS 'Returns all active subscription plans';
+COMMENT ON FUNCTION get_plan_by_name(TEXT) IS 'Returns subscription plan by name';
+COMMENT ON FUNCTION get_plan_credit_configs_with_actions(UUID) IS 'Returns plan credit configs with action details';
+COMMENT ON FUNCTION handle_new_user_signup() IS 'Trigger function for auth.users to initialize new user data'; 

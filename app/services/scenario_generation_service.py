@@ -229,6 +229,9 @@ class ScenarioGenerationService:
 
             try:
                 result = json.loads(function_call.arguments)
+                # DEBUG: Log the raw response to see what OpenAI is returning
+                logger.info(f"OpenAI raw response parsed successfully")
+                logger.info(f"Result keys: {result.keys()}")
             except json.JSONDecodeError as e:
                 logger.error(
                     f"Failed to parse function call arguments as JSON: {e}")
@@ -237,6 +240,14 @@ class ScenarioGenerationService:
                     f"Invalid JSON in function call arguments: {e}")
 
             generated_scenario = result.get('scenario')
+            
+            # DEBUG: Log scenario structure
+            if generated_scenario:
+                logger.info(f"Generated scenario keys: {generated_scenario.keys()}")
+                if 'scenes' in generated_scenario:
+                    logger.info(f"🔍 OpenAI returned {len(generated_scenario['scenes'])} scenes")
+                else:
+                    logger.warning("⚠️ No 'scenes' key in generated scenario!")
 
             if not generated_scenario:
                 raise Exception("No scenario generated")
@@ -609,6 +620,9 @@ The final video must visually and textually reflect the original scraped product
                             },
                             "scenes": {
                                 "type": "array",
+                                "minItems": 3,
+                                "maxItems": 6,
+                                "description": "Array of exactly 3 scenes (or 6 if EXTENDED_SCENES is true). Each scene must be exactly 8 seconds.",
                                 "items": {
                                     "type": "object",
                                     "required": ["sceneId", "description", "duration", "imagePrompt", "visualPrompt", "imageReasoning"],
@@ -642,10 +656,14 @@ The final video must visually and textually reflect the original scraped product
                 logger.warning(f"Expected scenes to be a list, got {type(scenes_data)}. Creating empty scenes list.")
                 scenes_data = []
             
+            logger.info(f"🔍 Processing {len(scenes_data)} scenes from OpenAI response")
+            
             for i, scene_data in enumerate(scenes_data):
                 if not isinstance(scene_data, dict):
                     logger.warning(f"Scene {i} is not a dictionary: {type(scene_data)}. Skipping.")
                     continue
+                
+                logger.info(f"Processing scene {i}: {scene_data.get('sceneId', f'scene-{i}')}")
                                     
                 # Create scene with fallback values for missing fields
                 scene = Scene(

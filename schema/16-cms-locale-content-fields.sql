@@ -42,7 +42,8 @@ BEGIN
         RAISE NOTICE 'Migrated page % (%) to locale-aware format', page_record.slug, page_record.id;
     END LOOP;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Execute the migration
 SELECT migrate_content_fields_to_locale_aware();
@@ -87,7 +88,8 @@ BEGIN
     -- Return empty object if no content found
     RETURN '{}'::jsonb;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql
+SET search_path = public;
 
 -- Add index for faster locale-based queries
 CREATE INDEX IF NOT EXISTS idx_cms_pages_content_fields_locale 
