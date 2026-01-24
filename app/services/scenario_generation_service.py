@@ -30,6 +30,10 @@ from app.logging_config import get_logger
 
 logger = get_logger(__name__)
 
+# Retry configuration for scenario generation
+MAX_SCENARIO_RETRIES = 3
+RETRY_DELAY = 2  # seconds between retries
+
 
 class ScenarioGenerationService:
     """Service for generating AI-powered video scenarios"""
@@ -198,107 +202,152 @@ class ScenarioGenerationService:
             logger.error(f"Failed to fetch product data: {e}")
             return None
 
-    async def _generate_scenario_with_openai(self, request: ScenarioGenerationRequest) -> Optional[GeneratedScenario]:
-        """Generate scenario using OpenAI API"""
+    def _validate_scenario_response(self, generated_scenario: dict, expected_scene_count: int) -> tuple[bool, str]:
+        """
+        Validate if OpenAI response meets all requirements.
+        Returns (is_valid, error_message)
+        """
         try:
-            system_message = await self._build_system_message(request)
-            user_message = await self._build_user_message(request)
-
-            logger.info("Sending request to OpenAI...")
-            response = self.openai_client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": user_message}
-                ],
-                functions=[self._get_scenario_generation_function()],
-                function_call={"name": "generate_single_scenario"},
-                temperature=0.2,
-                top_p=0.1
-            )
-
-            logger.info("OpenAI response received")
-            logger.info(f"Response choices: {len(response.choices)}")
-
-            if not response.choices:
-                raise Exception("No choices in OpenAI response")
-
-            function_call = response.choices[0].message.function_call
-            if not function_call:
-                raise Exception("No function call in OpenAI response")
-
-            try:
-                result = json.loads(function_call.arguments)
-                # DEBUG: Log the raw response to see what OpenAI is returning
-                logger.info(f"OpenAI raw response parsed successfully")
-                logger.info(f"Result keys: {result.keys()}")
-            except json.JSONDecodeError as e:
-                logger.error(
-                    f"Failed to parse function call arguments as JSON: {e}")
-                logger.error(f"Raw arguments: {function_call.arguments}")
-                raise Exception(
-                    f"Invalid JSON in function call arguments: {e}")
-
-            generated_scenario = result.get('scenario')
-            
-            # DEBUG: Log scenario structure
-            if generated_scenario:
-                logger.info(f"Generated scenario keys: {generated_scenario.keys()}")
-                if 'scenes' in generated_scenario:
-                    logger.info(f"🔍 OpenAI returned {len(generated_scenario['scenes'])} scenes")
-                else:
-                    logger.warning("⚠️ No 'scenes' key in generated scenario!")
-
-            if not generated_scenario:
-                raise Exception("No scenario generated")
-
+            # Check if it's a dictionary
             if not isinstance(generated_scenario, dict):
-                logger.warning(
-                    f"AI returned unexpected format: {type(generated_scenario)}. Attempting to create fallback scenario...")
-                # Try to create a basic scenario from the response
-                if isinstance(generated_scenario, str):
-                    # If it's a string, try to parse it as JSON
-                    try:
-                        generated_scenario = json.loads(generated_scenario)
-                    except json.JSONDecodeError:
-                        logger.error("Failed to parse string response as JSON")
-                        raise Exception(
-                            f"AI returned string instead of structured scenario: {generated_scenario}")
-                else:
-                    raise Exception(
-                        f"Expected scenario to be a dictionary, got {type(generated_scenario)}: {generated_scenario}")
-
-            # Validate that we have the required fields
-            required_fields = ['title', 'description', 'scenes',
-                'detectedDemographics', 'thumbnailPrompt']
-            missing_fields = [
-                field for field in required_fields if field not in generated_scenario]
+                return False, f"Response is not a dictionary, got {type(generated_scenario)}"
+            
+            # Check required fields
+            required_fields = ['title', 'description', 'scenes', 'detectedDemographics', 'thumbnailPrompt']
+            missing_fields = [field for field in required_fields if field not in generated_scenario]
             if missing_fields:
-                logger.warning(
-                    f"Missing required fields: {missing_fields}. Creating fallback values...")
-                # Create fallback values for missing fields
-                if 'title' not in generated_scenario:
-                    generated_scenario['title'] = 'Generated Video Scenario'
-                if 'description' not in generated_scenario:
-                    generated_scenario['description'] = 'AI-generated video scenario'
-                if 'scenes' not in generated_scenario:
-                    generated_scenario['scenes'] = []
-                if 'detectedDemographics' not in generated_scenario:
-                    generated_scenario['detectedDemographics'] = {
-                        'targetGender': 'unisex',
-                        'ageGroup': 'all-ages',
-                        'productType': 'general',
-                        'demographicContext': 'gender-neutral characters/models throughout'
-                    }
-                if 'thumbnailPrompt' not in generated_scenario:
-                    generated_scenario['thumbnailPrompt'] = 'Create an eye-catching thumbnail for this video content'
-
-            return await self._transform_openai_response(generated_scenario, request)
-
+                return False, f"Missing required fields: {', '.join(missing_fields)}"
+            
+            # Check scenes field
+            scenes = generated_scenario.get('scenes', [])
+            if not isinstance(scenes, list):
+                return False, f"Scenes is not a list, got {type(scenes)}"
+            
+            if len(scenes) == 0:
+                return False, "No scenes returned in response"
+            
+            # Validate scene count matches expected
+            if len(scenes) != expected_scene_count:
+                return False, f"Expected {expected_scene_count} scenes but got {len(scenes)} scenes"
+            
+            # Validate each scene structure
+            for i, scene in enumerate(scenes):
+                if not isinstance(scene, dict):
+                    return False, f"Scene {i} is not a dictionary, got {type(scene)}"
+                
+                # Check required scene fields
+                required_scene_fields = ['sceneId', 'description', 'duration', 'imagePrompt', 'visualPrompt']
+                missing_scene_fields = [field for field in required_scene_fields if field not in scene]
+                if missing_scene_fields:
+                    return False, f"Scene {i} missing fields: {', '.join(missing_scene_fields)}"
+            
+            # Validate demographics structure
+            demographics = generated_scenario.get('detectedDemographics', {})
+            if not isinstance(demographics, dict):
+                return False, f"Demographics is not a dictionary, got {type(demographics)}"
+            
+            # All validation passed
+            return True, "Valid response"
+            
         except Exception as e:
-            logger.error(
-                f"Failed to generate scenario with OpenAI: {e}", exc_info=True)
-            return None
+            return False, f"Validation error: {str(e)}"
+
+    async def _generate_scenario_with_openai(self, request: ScenarioGenerationRequest) -> Optional[GeneratedScenario]:
+        """Generate scenario using OpenAI API with retry logic"""
+        expected_scene_count = request.video_length // 8
+        last_error = None
+        
+        for attempt in range(MAX_SCENARIO_RETRIES):
+            try:
+                logger.info(f"Scenario generation attempt {attempt + 1}/{MAX_SCENARIO_RETRIES}")
+                
+                system_message = await self._build_system_message(request)
+                user_message = await self._build_user_message(request)
+
+                logger.info("Sending request to OpenAI...")
+                response = self.openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[
+                        {"role": "system", "content": system_message},
+                        {"role": "user", "content": user_message}
+                    ],
+                    functions=[self._get_scenario_generation_function()],
+                    function_call={"name": "generate_single_scenario"},
+                    temperature=0.2,
+                    top_p=0.1
+                )
+
+                logger.info("OpenAI response received")
+                logger.info(f"Response choices: {len(response.choices)}")
+
+                if not response.choices:
+                    raise Exception("No choices in OpenAI response")
+
+                function_call = response.choices[0].message.function_call
+                if not function_call:
+                    raise Exception("No function call in OpenAI response")
+
+                try:
+                    result = json.loads(function_call.arguments)
+                    logger.info(f"OpenAI raw response parsed successfully")
+                    logger.info(f"Result keys: {result.keys()}")
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse function call arguments as JSON: {e}")
+                    logger.error(f"Raw arguments: {function_call.arguments}")
+                    raise Exception(f"Invalid JSON in function call arguments: {e}")
+
+                generated_scenario = result.get('scenario')
+                
+                # DEBUG: Log scenario structure
+                if generated_scenario:
+                    logger.info(f"Generated scenario keys: {generated_scenario.keys()}")
+                    if 'scenes' in generated_scenario:
+                        logger.info(f"🔍 OpenAI returned {len(generated_scenario['scenes'])} scenes")
+                    else:
+                        logger.warning("⚠️ No 'scenes' key in generated scenario!")
+
+                if not generated_scenario:
+                    raise Exception("No scenario generated")
+
+                # Validate the response
+                is_valid, validation_error = self._validate_scenario_response(generated_scenario, expected_scene_count)
+                
+                if not is_valid:
+                    logger.warning(f"❌ Attempt {attempt + 1} validation failed: {validation_error}")
+                    last_error = validation_error
+                    
+                    # If this is not the last attempt, retry
+                    if attempt < MAX_SCENARIO_RETRIES - 1:
+                        retry_delay = RETRY_DELAY * (attempt + 1)  # Exponential backoff
+                        logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        # Last attempt failed, raise exception with detailed error
+                        raise Exception(f"Scenario validation failed after {MAX_SCENARIO_RETRIES} attempts. Last error: {validation_error}")
+                
+                # Validation passed! Transform and return
+                logger.info(f"✅ Attempt {attempt + 1} validation passed!")
+                return await self._transform_openai_response(generated_scenario, request)
+
+            except Exception as e:
+                last_error = str(e)
+                logger.error(f"❌ Attempt {attempt + 1} failed: {e}")
+                
+                # If this is not the last attempt, retry
+                if attempt < MAX_SCENARIO_RETRIES - 1:
+                    retry_delay = RETRY_DELAY * (attempt + 1)
+                    logger.info(f"⏳ Retrying in {retry_delay} seconds...")
+                    time.sleep(retry_delay)
+                    continue
+                else:
+                    # Last attempt failed
+                    logger.error(f"❌ Failed to generate scenario after {MAX_SCENARIO_RETRIES} attempts. Last error: {last_error}")
+                    return None
+        
+        # Should not reach here, but just in case
+        logger.error(f"❌ Failed to generate valid scenario after {MAX_SCENARIO_RETRIES} attempts")
+        return None
 
     async def _build_system_message(self, request: ScenarioGenerationRequest) -> str:
         """Build system message for OpenAI"""
@@ -646,26 +695,16 @@ The final video must visually and textually reflect the original scraped product
     async def _transform_openai_response(self, openai_scenario: Dict[str, Any], request: ScenarioGenerationRequest) -> GeneratedScenario:
         """Transform OpenAI response to our GeneratedScenario model"""
         try:            
-            # Ensure we have a dictionary
-            if not isinstance(openai_scenario, dict):
-                raise Exception(f"Expected openai_scenario to be a dictionary, got {type(openai_scenario)}: {openai_scenario}")
-            
+            # Response is already validated, so we can safely process it
             scenes = []
             scenes_data = openai_scenario.get('scenes', [])
-            if not isinstance(scenes_data, list):
-                logger.warning(f"Expected scenes to be a list, got {type(scenes_data)}. Creating empty scenes list.")
-                scenes_data = []
             
-            logger.info(f"🔍 Processing {len(scenes_data)} scenes from OpenAI response")
+            logger.info(f"🔍 Processing {len(scenes_data)} scenes from validated OpenAI response")
             
             for i, scene_data in enumerate(scenes_data):
-                if not isinstance(scene_data, dict):
-                    logger.warning(f"Scene {i} is not a dictionary: {type(scene_data)}. Skipping.")
-                    continue
-                
                 logger.info(f"Processing scene {i}: {scene_data.get('sceneId', f'scene-{i}')}")
                                     
-                # Create scene with fallback values for missing fields
+                # Create scene with fallback values for optional fields only
                 scene = Scene(
                     scene_id=scene_data.get('sceneId', f"scene-{i}"),
                     scene_number=i+1,
@@ -680,28 +719,8 @@ The final video must visually and textually reflect the original scraped product
                 scenes.append(scene)
                 logger.info(f"Created scene: {scene.scene_number}")
             
-            # If no scenes were created, create a default scene
-            if not scenes:
-                logger.warning("No valid scenes found, creating default scene")
-                default_scene = Scene(
-                    scene_id="scene-default",
-                    scene_number=1,
-                    description="Default scene for video",
-                    duration=8,
-                    image_prompt="Generate a compelling product image",
-                    visual_prompt="Show the product in an engaging way",
-                    image_reasoning="Default scene generation",
-                    generated_image_url=None
-                )
-                scenes.append(default_scene)
-                logger.info("Created default scene")
-            
-            # Validate and create demographics with fallbacks
+            # Validate and create demographics
             demographics_data = openai_scenario.get('detectedDemographics', {})
-            if not isinstance(demographics_data, dict):
-                logger.warning(f"Expected detectedDemographics to be a dictionary, got {type(demographics_data)}. Creating default.")
-                demographics_data = {}
-            
             demographics = DetectedDemographics(
                 target_gender=demographics_data.get('targetGender', 'unisex'),
                 age_group=demographics_data.get('ageGroup', 'all-ages'),
