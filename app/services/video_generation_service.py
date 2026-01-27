@@ -444,9 +444,17 @@ class VideoGenerationService:
                         logger.info(f"Retryable error detected: {error_msg}")
                         logger.info(f"Retrying video generation (attempt {retry_count + 1}/{max_retries + 1})")
                         
-                        # Wait a bit before retrying
+                        # Use exponential backoff for service errors, shorter delay for content policy
                         import time
-                        time.sleep(2)
+                        if any(keyword in error_msg.lower() for keyword in ["high load", "rate limit", "quota", "unavailable", "timeout"]):
+                            # Service errors: exponential backoff (5s, 10s, 20s)
+                            retry_delay = 5 * (2 ** (retry_count - 1))
+                            logger.info(f"Service error detected, using exponential backoff: {retry_delay}s")
+                        else:
+                            # Content policy errors: fixed short delay
+                            retry_delay = 2
+                        
+                        time.sleep(retry_delay)
                         continue
                     else:
                         # Not retryable or max retries reached
@@ -778,8 +786,9 @@ class VideoGenerationService:
             raise Exception(f"Failed to download image: {e}")
     
     def _is_retryable_video_error(self, error_msg: str) -> bool:
-        """Check if a video generation error is retryable (e.g., usage guidelines violation)."""
+        """Check if a video generation error is retryable (e.g., usage guidelines violation, service issues)."""
         retryable_errors = [
+            # Content policy errors
             "usage guidelines",
             "violates Vertex AI's usage guidelines",
             "content policy",
@@ -791,7 +800,20 @@ class VideoGenerationService:
             "input image violates",
             "could not generate videos because",
             "content safety",
-            "policy violation"
+            "policy violation",
+            # Service availability errors
+            "high load",
+            "experiencing high load",
+            "service is currently experiencing",
+            "rate limit",
+            "quota exceeded",
+            "service unavailable",
+            "temporarily unavailable",
+            "try again later",
+            "timeout",
+            "timed out",
+            "503",
+            "429"
         ]
         
         error_lower = error_msg.lower()

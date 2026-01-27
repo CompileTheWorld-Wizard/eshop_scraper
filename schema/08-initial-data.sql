@@ -35,7 +35,17 @@ SELECT
     ca.id as action_id,
     ca.base_credit_cost as credit_cost,
     CASE 
-        WHEN sp.name = 'free' THEN 1
+        WHEN sp.name = 'free' THEN 
+            CASE 
+                WHEN ca.action_name = 'scraping' THEN 5  -- Free plan: 5 scrapings per month (uses all 5 credits)
+                WHEN ca.action_name = 'generate_scenario' THEN 2  -- Free plan: 2 scenarios (costs 2 credits each = 4 credits, leaving 1 for scraping)
+                WHEN ca.action_name = 'generate_scene' THEN 0  -- Not available on free plan
+                WHEN ca.action_name = 'generate_image' THEN 0  -- Not available on free plan
+                WHEN ca.action_name = 'generate_audio' THEN 0  -- Not available on free plan
+                WHEN ca.action_name = 'merge_video' THEN 5  -- Video merging is free (0 credits) but limit to 5
+                WHEN ca.action_name = 'upscale_video' THEN 0  -- Not available on free plan
+                ELSE 0
+            END
         WHEN sp.name = 'starter' THEN 
             CASE 
                 WHEN ca.action_name = 'scraping' THEN 50
@@ -69,7 +79,12 @@ SELECT
         ELSE NULL
     END as monthly_limit,
     CASE 
-        WHEN sp.name = 'free' THEN 1
+        WHEN sp.name = 'free' THEN 
+            CASE 
+                WHEN ca.action_name = 'scraping' THEN 5  -- Free plan: up to 5 scrapings per day (limited by credits)
+                WHEN ca.action_name = 'generate_scenario' THEN 2  -- Free plan: up to 2 scenarios per day
+                ELSE NULL
+            END
         ELSE NULL
     END as daily_limit,
     true as is_active

@@ -25,7 +25,6 @@ BEGIN
     WHERE u.id = user_uuid;
 END;
 $$ LANGUAGE plpgsql
-SECURITY DEFINER
 SET search_path = public;
 
 -- Function to get user status
@@ -69,7 +68,6 @@ BEGIN
     WHERE u.id = user_uuid;
 END;
 $$ LANGUAGE plpgsql
-SECURITY DEFINER
 SET search_path = public;
 
 -- Function to check if user can perform an action (consolidated from migrations 15, 20)
@@ -590,8 +588,8 @@ CREATE OR REPLACE FUNCTION add_user_credits(
     metadata JSONB DEFAULT '{}'::JSONB
 )
 RETURNS TABLE(
-    credits_total INTEGER,
-    credits_remaining INTEGER
+    result_credits_total INTEGER,
+    result_credits_remaining INTEGER
 )
 -- Note: Returns credits_total and credits_remaining (stored directly) for compatibility
 SECURITY DEFINER -- This allows the function to bypass RLS
@@ -730,7 +728,8 @@ BEGIN
     END IF;
     
     -- Return credits_total and credits_remaining (stored directly)
-    RETURN QUERY SELECT new_total, new_remaining;
+    -- Use explicit aliases to avoid ambiguity with table column names
+    RETURN QUERY SELECT new_total AS credits_total, new_remaining AS credits_remaining;
 END;
 $$ LANGUAGE plpgsql
 SET search_path = public;
@@ -848,8 +847,8 @@ BEGIN
         'https://promonexai.com/en/register?ref=' || encode(convert_to(COALESCE(user_email, ''), 'UTF8'), 'base64'), -- Generate referral_link as URL with base64 encoded email
         'user',
         true,
-        10, -- Free tier credits
-        10
+        5, -- Free tier credits (matches subscription_plans.monthly_credits for free plan)
+        5
     )
     ON CONFLICT (user_id) DO UPDATE SET
         referral_link = COALESCE(user_profiles.referral_link, 'https://promonexai.com/en/register?ref=' || encode(convert_to(COALESCE(user_email, ''), 'UTF8'), 'base64'));
@@ -878,11 +877,15 @@ BEGIN
     INSERT INTO public.user_credits (
         user_id,
         total_credits,
-        credits_remaining
+        credits_remaining,
+        subscription_credits_remaining,
+        addon_credits_remaining
     ) VALUES (
         user_uuid,
-        50, -- Free tier credits
-        50  -- Free tier credits (remaining = total for new users)
+        5, -- Free tier credits (matches subscription_plans.monthly_credits for free plan)
+        5, -- Free tier credits (remaining = total for new users)
+        5, -- Subscription credits = 5
+        0  -- No addon credits initially
     )
     ON CONFLICT (user_id) DO NOTHING;
     
