@@ -67,7 +67,7 @@ class MergingService:
             # Create task
             task_metadata = {
                 "user_id": user_id,
-                "short_id": short_id,
+                "short_id": short_id,x
                 "task_type": "finalize_short"
             }
 
@@ -1080,17 +1080,19 @@ class MergingService:
             raise
 
     def _add_watermark_if_needed(self, video_path: str, user_id: str, task_id: str) -> str:
-        """Add watermark if user is on free plan."""
+        """Add watermark based on user's plan watermark_enabled setting."""
         try:
-            # Check user's plan
+            # Step 1: Get user's plan name
             user_plan = self._get_user_plan(user_id)
+            
+            # Step 2: Get watermark_enabled setting for this plan
+            watermark_enabled = self._get_plan_watermark_setting(user_plan)
 
-            if user_plan == "free":
-                logger.info(f"Adding watermark for free plan user {user_id}")
+            if watermark_enabled:
+                logger.info(f"Adding watermark for user {user_id} (plan: {user_plan}, watermark_enabled: true)")
                 return self._add_watermark_to_video(video_path, task_id)
             else:
-                logger.info(
-                    f"User {user_id} is on {user_plan} plan, no watermark needed")
+                logger.info(f"User {user_id} is on {user_plan} plan, watermark disabled (watermark_enabled: false)")
                 return video_path
 
         except Exception as e:
@@ -1119,6 +1121,31 @@ class MergingService:
         except Exception as e:
             logger.error(f"Failed to get user plan: {e}")
             return "free"
+    
+    def _get_plan_watermark_setting(self, plan_name: str) -> bool:
+        """Get watermark_enabled setting for a subscription plan."""
+        try:
+            if not supabase_manager.is_connected():
+                return True  # Default to watermark enabled if can't check
+
+            # Query subscription_plans table for watermark_enabled
+            result = supabase_manager.client.table('subscription_plans') \
+                .select('watermark_enabled') \
+                .eq('name', plan_name) \
+                .execute()
+
+            if result.data and len(result.data) > 0:
+                watermark_enabled = result.data[0].get('watermark_enabled', True)
+                logger.info(f"Plan '{plan_name}' watermark_enabled: {watermark_enabled}")
+                return watermark_enabled
+
+            # If plan not found, default to watermark enabled for safety
+            logger.warning(f"Plan '{plan_name}' not found in subscription_plans, defaulting to watermark enabled")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to get watermark setting for plan '{plan_name}': {e}")
+            return True  # Default to watermark enabled if error
 
     def _add_watermark_to_video(self, video_path: str, task_id: str) -> str:
         """Add watermark to video using FFmpeg."""
