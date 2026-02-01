@@ -67,7 +67,7 @@ class MergingService:
             # Create task
             task_metadata = {
                 "user_id": user_id,
-                "short_id": short_id,x
+                "short_id": short_id,
                 "task_type": "finalize_short"
             }
 
