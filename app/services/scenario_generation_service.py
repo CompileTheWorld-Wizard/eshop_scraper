@@ -302,9 +302,9 @@ class ScenarioGenerationService:
                 if generated_scenario:
                     logger.info(f"Generated scenario keys: {generated_scenario.keys()}")
                     if 'scenes' in generated_scenario:
-                        logger.info(f"OpenAI returned {len(generated_scenario['scenes'])} scenes")
+                        logger.info(f"🔍 OpenAI returned {len(generated_scenario['scenes'])} scenes")
                     else:
-                        logger.warning("No 'scenes' key in generated scenario!")
+                        logger.warning("⚠️ No 'scenes' key in generated scenario!")
 
                 if not generated_scenario:
                     raise Exception("No scenario generated")
@@ -699,7 +699,7 @@ The final video must visually and textually reflect the original scraped product
             scenes = []
             scenes_data = openai_scenario.get('scenes', [])
             
-            logger.info(f"Processing {len(scenes_data)} scenes from validated OpenAI response")
+            logger.info(f"🔍 Processing {len(scenes_data)} scenes from validated OpenAI response")
             
             for i, scene_data in enumerate(scenes_data):
                 logger.info(f"Processing scene {i}: {scene_data.get('sceneId', f'scene-{i}')}")

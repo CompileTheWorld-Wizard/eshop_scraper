@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends, Query
+from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -1511,8 +1511,11 @@ def merge_image_with_video(
         # TODO: Re-enable security checks for production by uncommenting the lines below
         # validate_request_security(http_request, api_key)
         
-        logger.info(f"[SCENE2] Received async merge request for scene {request.scene_id} by user {request.user_id}")
-        logger.info(f"[SCENE2] Request details:")
+        print("\n" + "🔔 "*40)
+        print("📨 NEW SCENE2 VIDEO MERGE REQUEST RECEIVED (ASYNC)")
+        print("🔔 "*40)
+        logger.info(f"📥 Received async merge request for scene {request.scene_id} by user {request.user_id}")
+        logger.info(f"📋 Request details:")
         logger.info(f"   - Product Image: {request.product_image_url[:80]}...")
         logger.info(f"   - Background Video: {request.background_video_url[:80]}...")
         logger.info(f"   - Scale: {request.scale}")
@@ -1536,7 +1539,9 @@ def merge_image_with_video(
             add_animation=request.add_animation
         )
         
-        logger.info(f"[SCENE2] Started async merge task {result['task_id']} for scene {request.scene_id}")
+        logger.info(f"✅ Started async merge task {result['task_id']} for scene {request.scene_id}")
+        print("🔔 "*40)
+        print()
         
         return MergeImageWithVideoResponse(
             success=True,
@@ -1549,7 +1554,9 @@ def merge_image_with_video(
         )
         
     except Exception as e:
-        logger.error(f"[SCENE2] Error starting image-video merge task: {e}", exc_info=True)
+        logger.error(f"Error starting image-video merge task: {e}", exc_info=True)
+        print("🔔 "*40)
+        print()
         raise HTTPException(status_code=500, detail=f"Failed to start image-video merge: {str(e)}")
 
 
@@ -1612,35 +1619,5 @@ def get_image_merge_task_status(
         raise
     except Exception as e:
         logger.error(f"Error getting image merge task status {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
-
-
-@router.get("/scenes/generate-scene2", response_model=MergeImageWithVideoResponse)
-def get_scene2_task_status_compat(
-    taskId: str = Query(..., description="Task ID to check"),
-    shortId: Optional[str] = Query(None, description="Short ID for logging"),
-    sceneNumber: Optional[int] = Query(None, description="Scene number for logging"),
-    api_key: Optional[str] = Depends(get_api_key)
-) -> MergeImageWithVideoResponse:
-    """
-    Poll Scene2 task status (compatibility endpoint for Next.js).
-    
-    This is an alias for GET /image/merge-with-video/tasks/{task_id}
-    that matches the URL pattern Next.js expects for Scene2 polling.
-    
-    Next.js calls: GET /api/v1/scenes/generate-scene2?taskId=xxx&shortId=yyy&sceneNumber=2
-    
-    Authentication: Optional API key via Bearer token
-    """
-    try:
-        logger.info(f"[SCENE2-COMPAT] Polling task {taskId} (shortId={shortId}, scene={sceneNumber})")
-        
-        # Delegate to the main task status function
-        return get_image_merge_task_status(task_id=taskId, api_key=api_key)
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"[SCENE2-COMPAT] Error getting task status {taskId}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
 
