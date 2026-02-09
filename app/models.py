@@ -277,6 +277,69 @@ class AudioGenerationResponse(BaseModel):
     subtitle_timing: Optional[List[Dict[str, Any]]] = Field(None, description="Subtitle timing information")
 
 
+# Image Processing Models
+class RemoveBackgroundRequest(BaseModel):
+    image_url: str = Field(..., description="URL of the image to remove background from")
+    scene_id: Optional[str] = Field(None, description="Optional scene ID for organizing files")
+    user_id: str = Field(..., description="User ID associated with the request")
+
+class RemoveBackgroundResponse(BaseModel):
+    success: bool = Field(..., description="Whether the operation succeeded")
+    image_url: Optional[str] = Field(None, description="URL of the background-removed image")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+class CompositeImagesRequest(BaseModel):
+    background_url: str = Field(..., description="URL of the background image")
+    foreground_url: Optional[str] = Field(None, description="URL of the foreground/overlay image (alias for overlay_url)")
+    overlay_url: Optional[str] = Field(None, description="URL of the overlay image (typically background-removed)")
+    scene_id: Optional[str] = Field(None, description="Optional scene ID for organizing files and updating database")
+    user_id: Optional[str] = Field(None, description="Optional user ID for organizing files")
+
+class CompositeImagesResponse(BaseModel):
+    success: bool = Field(..., description="Whether the operation succeeded")
+    image_url: Optional[str] = Field(None, description="URL of the composited image")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+class ReplaceBackgroundRequest(BaseModel):
+    product_image_url: str = Field(..., description="URL of the product image")
+    background_image_url: str = Field(..., description="URL of the new background image")
+    scene_id: str = Field(..., description="Scene ID for organizing files and updating database")
+    user_id: str = Field(..., description="User ID for organizing files")
+
+class ReplaceBackgroundResponse(BaseModel):
+    success: bool = Field(..., description="Whether the operation succeeded")
+    image_url: Optional[str] = Field(None, description="URL of the final composited image")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+class MergeImageWithVideoRequest(BaseModel):
+    product_image_url: str = Field(..., description="URL of the product image (PNG with transparent background)")
+    background_video_url: str = Field(..., description="URL of the background video from Storyblocks")
+    scene_id: str = Field(..., description="Scene ID for organizing files and updating database")
+    user_id: str = Field(..., description="User ID for organizing files")
+    scale: float = Field(0.4, description="Scale of product relative to video width (0.0-1.0)")
+    position: str = Field("center", description="Position of product ('center', 'top', 'bottom', 'left', 'right')")
+    duration: Optional[int] = Field(None, description="Optional duration in seconds (None = full video)")
+    add_animation: bool = Field(True, description="Whether to add zoom and floating animations")
+    
+    # Optional fields that frontend might send (for compatibility)
+    short_id: Optional[str] = Field(None, description="Optional short ID (alias for scene_id)")
+    shortId: Optional[str] = Field(None, description="Optional short ID camelCase (for frontend compatibility)")
+    sceneNumber: Optional[int] = Field(None, description="Optional scene number (not used by backend)")
+    
+    class Config:
+        # Allow extra fields from frontend without validation errors
+        extra = "allow"
+
+class MergeImageWithVideoResponse(BaseModel):
+    success: bool = Field(..., description="Whether the operation succeeded")
+    video_url: Optional[str] = Field(None, description="URL of the merged video")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+
 # Session Management Models
 class SessionInfo(BaseModel):
     short_id: str = Field(..., description="Short ID associated with the session")

@@ -11,7 +11,9 @@ from app.models import (
     TaskStatus, TaskPriority, VideoGenerationRequest, VideoGenerationResponse,
     FinalizeShortRequest, FinalizeShortResponse, ImageAnalysisRequest, ImageAnalysisResponse,
     ScenarioGenerationRequest, ScenarioGenerationResponse, SaveScenarioRequest, SaveScenarioResponse,
-    TestAudioRequest, TestAudioResponse, AudioGenerationRequest, AudioGenerationResponse
+    TestAudioRequest, TestAudioResponse, AudioGenerationRequest, AudioGenerationResponse,
+    RemoveBackgroundRequest, RemoveBackgroundResponse, CompositeImagesRequest, CompositeImagesResponse,
+    ReplaceBackgroundRequest, ReplaceBackgroundResponse, MergeImageWithVideoRequest, MergeImageWithVideoResponse
 )
 from app.services.scraping_service import scraping_service
 from app.services.video_generation_service import video_generation_service
@@ -21,6 +23,7 @@ from app.services.scenario_generation_service import scenario_generation_service
 from app.services.save_scenario_service import save_scenario_service
 from app.services.test_audio_service import test_audio_service
 from app.services.audio_generation_service import audio_generation_service
+from app.services.image_processing_service import image_processing_service
 from app.services.scheduler_service import get_scheduler_status, run_cleanup_now
 from app.services.session_service import session_service
 from app.config import settings
@@ -1291,4 +1294,266 @@ def generate_audio(
     except Exception as e:
         logger.error(f"Error in audio generation endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Audio generation failed: {str(e)}")
+
+
+# ============================================================================
+# Image Processing Endpoints
+# ============================================================================
+
+@router.post("/image/remove-background", response_model=RemoveBackgroundResponse)
+def remove_background(
+    request: RemoveBackgroundRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> RemoveBackgroundResponse:
+    """
+    Remove background from an image using Remove.bg API.
+    
+    This endpoint processes an image URL and removes its background using the Remove.bg service.
+    The processed image is uploaded to Supabase storage and the URL is returned.
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        logger.info(f"Starting background removal for image by user {request.user_id}")
+        
+        # Process the image
+        result = image_processing_service.remove_background(
+            image_url=request.image_url,
+            scene_id=request.scene_id
+        )
+        
+        if result['success']:
+            logger.info(f"Background removal completed successfully for user {request.user_id}")
+            return RemoveBackgroundResponse(
+                success=True,
+                image_url=result['image_url'],
+                message="Background removed successfully",
+                error=None
+            )
+        else:
+            logger.error(f"Background removal failed for user {request.user_id}: {result['error']}")
+            return RemoveBackgroundResponse(
+                success=False,
+                image_url=None,
+                message="Background removal failed",
+                error=result['error']
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in remove background endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Background removal failed: {str(e)}")
+
+
+@router.post("/image/composite", response_model=CompositeImagesResponse)
+def composite_images(
+    request: CompositeImagesRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> CompositeImagesResponse:
+    """
+    Composite two images together (overlay on top of background).
+    
+    This endpoint merges a background image with an overlay/foreground image.
+    Supports both foreground_url and overlay_url parameters (they are aliases).
+    The composited image is uploaded to Supabase storage.
+    
+    If scene_id and user_id are provided, the scene's image_url will be updated in the database.
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        # Handle both foreground_url and overlay_url (they're aliases)
+        overlay_url = request.foreground_url or request.overlay_url
+        if not overlay_url:
+            raise HTTPException(
+                status_code=400, 
+                detail="Either foreground_url or overlay_url must be provided"
+            )
+        
+        # Use defaults for optional parameters
+        scene_id = request.scene_id or "temp"
+        user_id = request.user_id or "anonymous"
+        
+        logger.info(f"Starting image compositing: background={request.background_url[:50]}..., overlay={overlay_url[:50]}...")
+        
+        # Composite the images
+        result = image_processing_service.composite_images(
+            background_url=request.background_url,
+            overlay_url=overlay_url,
+            scene_id=scene_id,
+            user_id=user_id
+        )
+        
+        if result['success']:
+            logger.info(f"Image compositing completed successfully")
+            return CompositeImagesResponse(
+                success=True,
+                image_url=result['image_url'],
+                message="Images composited successfully",
+                error=None
+            )
+        else:
+            logger.error(f"Image compositing failed: {result['error']}")
+            return CompositeImagesResponse(
+                success=False,
+                image_url=None,
+                message="Image compositing failed",
+                error=result['error']
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in composite images endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Image compositing failed: {str(e)}")
+
+
+@router.post("/image/replace-background", response_model=ReplaceBackgroundResponse)
+def replace_background(
+    request: ReplaceBackgroundRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> ReplaceBackgroundResponse:
+    """
+    Complete workflow: Remove background from product image and composite with new background.
+    
+    This endpoint performs the complete background replacement workflow:
+    1. Removes background from the product image using Remove.bg API
+    2. Downloads the new background image
+    3. Composites the background-removed product onto the new background
+    4. Uploads the final image to Supabase storage
+    5. Updates the scene's image_url in the database
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        logger.info(f"Starting background replacement for scene {request.scene_id} by user {request.user_id}")
+        
+        # Perform the complete background replacement workflow
+        result = image_processing_service.replace_background(
+            product_image_url=request.product_image_url,
+            background_image_url=request.background_image_url,
+            scene_id=request.scene_id,
+            user_id=request.user_id
+        )
+        
+        if result['success']:
+            logger.info(f"Background replacement completed successfully for scene {request.scene_id}")
+            return ReplaceBackgroundResponse(
+                success=True,
+                image_url=result['image_url'],
+                message="Background replaced successfully",
+                error=None
+            )
+        else:
+            logger.error(f"Background replacement failed for scene {request.scene_id}: {result['error']}")
+            return ReplaceBackgroundResponse(
+                success=False,
+                image_url=None,
+                message="Background replacement failed",
+                error=result['error']
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in replace background endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Background replacement failed: {str(e)}")
+
+
+@router.post("/image/merge-with-video", response_model=MergeImageWithVideoResponse)
+def merge_image_with_video(
+    request: MergeImageWithVideoRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> MergeImageWithVideoResponse:
+    """
+    Merge a product image (without background) with a background video using OpenCV.
+    
+    This endpoint is designed for scene2 generation where the user selects:
+    - A product image (without background/transparent PNG)
+    - A background video from Storyblocks
+    
+    The service will:
+    1. Download both the product image and background video
+    2. Composite the product onto the video with optional animations (zoom, floating)
+    3. Upload the merged video to Supabase storage
+    4. Update the scene's generated_video_url in the database
+    
+    Animation features:
+    - Zoom animation: Product zooms from 5% to target scale over 3 seconds
+    - Floating animation: Gentle up-down movement after zoom completes
+    - Smooth position transitions
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        print("\n" + "🔔 "*40)
+        print("📨 NEW SCENE2 VIDEO MERGE REQUEST RECEIVED")
+        print("🔔 "*40)
+        logger.info(f"📥 Received merge request for scene {request.scene_id} by user {request.user_id}")
+        logger.info(f"📋 Request details:")
+        logger.info(f"   - Product Image: {request.product_image_url[:80]}...")
+        logger.info(f"   - Background Video: {request.background_video_url[:80]}...")
+        logger.info(f"   - Scale: {request.scale}")
+        logger.info(f"   - Position: {request.position}")
+        logger.info(f"   - Duration: {request.duration}")
+        logger.info(f"   - Animation: {request.add_animation}")
+        
+        # Perform the image-video merge
+        result = image_processing_service.merge_image_with_video(
+            product_image_url=request.product_image_url,
+            background_video_url=request.background_video_url,
+            scene_id=request.scene_id,
+            user_id=request.user_id,
+            scale=request.scale,
+            position=request.position,
+            duration=request.duration,
+            add_animation=request.add_animation
+        )
+        
+        if result['success']:
+            logger.info(f"✅ Image-video merge completed successfully for scene {request.scene_id}")
+            logger.info(f"🔗 Video URL: {result['video_url']}")
+            print("🔔 "*40)
+            print()
+            return MergeImageWithVideoResponse(
+                success=True,
+                video_url=result['video_url'],
+                message="Product image merged with background video successfully",
+                error=None
+            )
+        else:
+            logger.error(f"❌ Image-video merge failed for scene {request.scene_id}: {result['error']}")
+            print("🔔 "*40)
+            print()
+            return MergeImageWithVideoResponse(
+                success=False,
+                video_url=None,
+                message="Image-video merge failed",
+                error=result['error']
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in merge image with video endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Image-video merge failed: {str(e)}")
 

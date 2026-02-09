@@ -175,7 +175,7 @@ class MergingService:
             # Step 3: Merge videos
             logger.info(f"[STEP 3] Merging videos...")
             logger.info(f"[STEP 3] Merging {len(video_files)} video files into single video...")
-            merged_video_path = self._merge_videos(video_files, task_id)
+            merged_video_path = self._merge_videos(video_files, scenes_data, task_id)
             if not merged_video_path:
                 raise Exception("Failed to merge videos")
             merged_size = os.path.getsize(merged_video_path) if os.path.exists(merged_video_path) else 0
@@ -350,28 +350,20 @@ class MergingService:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
 
-            # Get scenario_id from video_scenarios table
-            scenario_result = supabase_manager.client.table('video_scenarios').select(
-                'id'
-            ).eq('short_id', short_id).execute()
-
-            if not scenario_result.data:
-                raise Exception(f"No scenario found for short {short_id}")
-
-            scenario_id = scenario_result.data[0]['id']
-
-            # Get all scenes with generated videos (only columns that exist in video_scenes table)
+            # Query video_scenes directly by short_id (no join needed - short_id is in video_scenes table)
             scenes_result = supabase_manager.client.table('video_scenes').select(
                 'id, scene_number, generated_video_url, duration'
-            ).eq('scenario_id', scenario_id).eq('status', 'completed').not_.is_('generated_video_url', 'null').execute()
+            ).eq('short_id', short_id).eq('status', 'completed').not_.is_('generated_video_url', 'null').execute()
 
             if not scenes_result.data:
                 raise Exception(
-                    f"No completed video scenes found for scenario {scenario_id}")
+                    f"No completed video scenes found for short {short_id}")
 
             # Sort by scene number
             scenes = sorted(scenes_result.data,
                             key=lambda x: x['scene_number'])
+
+            logger.info(f"✅ Found {len(scenes)} completed video scenes for short {short_id}")
 
             return scenes
 
@@ -1032,29 +1024,75 @@ class MergingService:
             logger.error(f"Failed to download videos: {e}")
             raise
 
-    def _merge_videos(self, video_files: List[str], task_id: str) -> str:
-        """Merge videos using FFmpeg."""
+    def _merge_videos(self, video_files: List[str], scenes_data: List[Dict[str, Any]], task_id: str) -> str:
+        """
+        Merge videos using FFmpeg, trimming each to its specified duration.
+        
+        Args:
+            video_files: List of video file paths
+            scenes_data: List of scene metadata including durations
+            task_id: Task ID for logging
+            
+        Returns:
+            Path to merged video file
+        """
         try:
             if len(video_files) == 1:
+                # Even for single video, trim it to specified duration
+                if len(scenes_data) == 1 and scenes_data[0].get('duration'):
+                    logger.info(f"Single video: trimming to {scenes_data[0]['duration']}s")
+                    return self._trim_video_to_duration(video_files[0], scenes_data[0]['duration'], task_id)
                 return video_files[0]
 
-            # Create temporary directory for merged video
+            # Create temporary directory for trimmed videos and merged video
             temp_dir = tempfile.mkdtemp()
+            
+            # Step 1: Trim each video to its specified duration
+            trimmed_files = []
+            total_expected_duration = 0
+            
+            logger.info(f"Trimming {len(video_files)} videos to their specified durations...")
+            for i, (video_file, scene_data) in enumerate(zip(video_files, scenes_data)):
+                scene_duration = scene_data.get('duration')
+                if not scene_duration:
+                    logger.warning(f"Scene {i+1} has no duration specified, using original video")
+                    trimmed_files.append(video_file)
+                    continue
+                
+                # Get actual video duration for logging
+                actual_duration = self._get_video_duration(video_file)
+                logger.info(f"Scene {i+1}: Trimming from {actual_duration}s to {scene_duration}s")
+                
+                # Trim video to specified duration
+                trimmed_path = os.path.join(temp_dir, f"trimmed_{i}.mp4")
+                self._trim_video(video_file, trimmed_path, scene_duration)
+                trimmed_files.append(trimmed_path)
+                total_expected_duration += scene_duration
+            
+            logger.info(f"Total expected duration after trimming: {total_expected_duration}s")
+
+            # Step 2: Merge trimmed videos
             merged_video_path = os.path.join(temp_dir, "merged.mp4")
 
-            # Create file list for FFmpeg
+            # Create file list for FFmpeg concat
             file_list_path = os.path.join(temp_dir, "file_list.txt")
             with open(file_list_path, 'w') as f:
-                for video_file in video_files:
-                    f.write(f"file '{video_file}'\n")
+                for trimmed_file in trimmed_files:
+                    f.write(f"file '{trimmed_file}'\n")
 
-            # Merge videos using FFmpeg concat demuxer
+            # Merge videos using FFmpeg concat demuxer with re-encoding for compatibility
+            # Using re-encoding ensures proper timing and frame alignment
             cmd = [
                 'ffmpeg', '-y',
                 '-f', 'concat',
                 '-safe', '0',
                 '-i', file_list_path,
-                '-c', 'copy',
+                '-c:v', 'libx264',        # Re-encode video for proper timing
+                '-preset', 'medium',       # Balanced speed/quality
+                '-crf', '23',              # Good quality
+                '-c:a', 'aac',             # Re-encode audio
+                '-b:a', '128k',            # Audio bitrate
+                '-movflags', '+faststart', # Enable streaming
                 merged_video_path
             ]
 
@@ -1066,17 +1104,85 @@ class MergingService:
             )
 
             if result.returncode != 0:
-                raise Exception(f"FFmpeg failed: {result.stderr}")
+                raise Exception(f"FFmpeg merge failed: {result.stderr}")
 
             if not os.path.exists(merged_video_path):
                 raise Exception("Merged video file was not created")
-
+            
+            # Verify final duration
+            final_duration = self._get_video_duration(merged_video_path)
             logger.info(
-                f"Successfully merged {len(video_files)} videos to {merged_video_path}")
+                f"Successfully merged {len(video_files)} videos. "
+                f"Expected: {total_expected_duration}s, Actual: {final_duration}s"
+            )
+            
             return merged_video_path
 
         except Exception as e:
             logger.error(f"Failed to merge videos: {e}")
+            raise
+    
+    def _trim_video(self, input_path: str, output_path: str, duration: float):
+        """
+        Trim video to specified duration.
+        
+        Args:
+            input_path: Input video file path
+            output_path: Output video file path
+            duration: Duration in seconds
+        """
+        try:
+            cmd = [
+                'ffmpeg', '-y',
+                '-i', input_path,
+                '-t', str(duration),       # Trim to specified duration
+                '-c:v', 'libx264',         # Re-encode for precise timing
+                '-preset', 'medium',
+                '-crf', '23',
+                '-c:a', 'aac',
+                '-b:a', '128k',
+                output_path
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=120  # 2 minutes timeout
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"FFmpeg trim failed: {result.stderr}")
+            
+            if not os.path.exists(output_path):
+                raise Exception("Trimmed video file was not created")
+            
+            actual_duration = self._get_video_duration(output_path)
+            logger.info(f"Trimmed video to {actual_duration}s (target: {duration}s)")
+            
+        except Exception as e:
+            logger.error(f"Failed to trim video: {e}")
+            raise
+    
+    def _trim_video_to_duration(self, video_path: str, duration: float, task_id: str) -> str:
+        """
+        Trim a single video to specified duration and return new path.
+        
+        Args:
+            video_path: Input video file path
+            duration: Duration in seconds
+            task_id: Task ID for logging
+            
+        Returns:
+            Path to trimmed video
+        """
+        try:
+            temp_dir = tempfile.mkdtemp()
+            trimmed_path = os.path.join(temp_dir, "trimmed.mp4")
+            self._trim_video(video_path, trimmed_path, duration)
+            return trimmed_path
+        except Exception as e:
+            logger.error(f"Failed to trim single video: {e}")
             raise
 
     def _add_watermark_if_needed(self, video_path: str, user_id: str, task_id: str) -> str:
@@ -1293,10 +1399,11 @@ class MergingService:
                         '[0:a]volume=0.2[vid_audio];'
                         '[1:a]volume=1.0[voice_audio];'
                         '[2:a]volume=0.4[bg_music];'
-                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=first:dropout_transition=2[out]',
                         '-map', '0:v',         # Map video from first input
                         '-map', '[out]',       # Map the mixed audio output
                         '-c:a', 'aac',         # Convert mixed audio to AAC
+                        '-shortest',           # Ensure output duration matches shortest stream (video)
                         merged_path
                     ]
                 else:
@@ -1313,10 +1420,11 @@ class MergingService:
                         '[0:a]volume=0.2[vid_audio];'
                         '[1:a]volume=1.0[voice_audio];'
                         '[bgmusic]volume=0.4[bg_audio];'
-                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=first:dropout_transition=2[out]',
                         '-map', '0:v',         # Map video from first input
                         '-map', '[out]',       # Map the mixed audio output
                         '-c:a', 'aac',         # Convert mixed audio to AAC
+                        '-shortest',           # Ensure output duration matches shortest stream (video)
                         merged_path
                     ]
             else:
@@ -1330,10 +1438,11 @@ class MergingService:
                     '-filter_complex', 
                     '[0:a]volume=0.3[vid_audio];'
                     '[1:a]volume=1.0[voice_audio];'
-                    '[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                    '[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',
                     '-map', '0:v',         # Map video from first input
                     '-map', '[out]',       # Map the mixed audio output
                     '-c:a', 'aac',         # Convert mixed audio to AAC
+                    '-shortest',           # Ensure output duration matches shortest stream (video)
                     merged_path
                 ]
 
@@ -1392,6 +1501,7 @@ class MergingService:
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:a', 'aac',
+                        '-shortest',
                         merged_path
                     ]
                 else:
@@ -1411,6 +1521,7 @@ class MergingService:
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:a', 'aac',
+                        '-shortest',
                         merged_path
                     ]
             else:
@@ -1424,6 +1535,7 @@ class MergingService:
                     '-map', '0:v',         # Map video from first input
                     '-map', '[out]',       # Map the mixed audio output
                     '-c:a', 'aac',         # Convert mixed audio to AAC
+                    '-shortest',
                     merged_path
                 ]
 
@@ -1478,11 +1590,12 @@ class MergingService:
                         '[0:a]volume=0.15[vid_audio];'
                         '[1:a]volume=1.0[voice];'
                         '[2:a]volume=0.4[music];'
-                        '[vid_audio][voice][music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '[vid_audio][voice][music]amix=inputs=3:duration=first:dropout_transition=2[out]',
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:v', 'copy',
                         '-c:a', 'aac',
+                        '-shortest',
                         merged_path
                     ]
                 else:
@@ -1498,11 +1611,12 @@ class MergingService:
                         '[0:a]volume=0.15[vid_audio];'
                         '[1:a]volume=1.0[voice];'
                         '[bgmusic]volume=0.4[music];'
-                        '[vid_audio][voice][music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '[vid_audio][voice][music]amix=inputs=3:duration=first:dropout_transition=2[out]',
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:v', 'copy',
                         '-c:a', 'aac',
+                        '-shortest',
                         merged_path
                     ]
             else:
@@ -1513,10 +1627,11 @@ class MergingService:
                     '-i', video_path,      # Input 0: video with sound effects
                     '-i', audio_path,      # Input 1: voice script audio
                     '-c:v', 'copy',        # Copy video codec
-                    '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                    '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',
                     '-map', '0:v',         # Map video from first input
                     '-map', '[out]',       # Map the mixed audio output
                     '-c:a', 'aac',         # Convert mixed audio to AAC
+                    '-shortest',
                     merged_path
                 ]
 
@@ -1566,11 +1681,12 @@ class MergingService:
                         '-filter_complex',
                         '[1:a]volume=1.0[voice];'
                         '[2:a]volume=0.4[music];'
-                        '[voice][music]amix=inputs=2:duration=longest[out]',
+                        '[voice][music]amix=inputs=2:duration=first[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
+                        '-shortest',
                         merged_path
                     ]
                 else:
@@ -1585,11 +1701,12 @@ class MergingService:
                         '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
                         '[1:a]volume=1.0[voice];'
                         '[bgmusic]volume=0.4[music];'
-                        '[voice][music]amix=inputs=2:duration=longest[out]',
+                        '[voice][music]amix=inputs=2:duration=first[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
+                        '-shortest',
                         merged_path
                     ]
             else:
@@ -1603,6 +1720,7 @@ class MergingService:
                     '-c:a', 'aac',         # Convert audio to AAC
                     '-map', '0:v',         # Map video from first input
                     '-map', '1:a',         # Map audio from second input (voice script)
+                    '-shortest',           # Ensure output duration matches video
                     merged_path
                 ]
 
@@ -1662,11 +1780,12 @@ class MergingService:
                         '-filter_complex',
                         '[0:a]volume=0.2[vid_audio];'
                         '[1:a]volume=0.4[bg_music];'
-                        '[vid_audio][bg_music]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                        '[vid_audio][bg_music]amix=inputs=2:duration=first:dropout_transition=2[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
+                        '-shortest',            # Ensure output duration matches video
                         merged_path
                     ]
                 else:
@@ -1681,11 +1800,12 @@ class MergingService:
                         '[1:a][2:a]concat=n=2:v=0:a=1[bgmusic];'
                         '[0:a]volume=0.2[vid_audio];'
                         '[bgmusic]volume=0.4[bg_music];'
-                        '[vid_audio][bg_music]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                        '[vid_audio][bg_music]amix=inputs=2:duration=first:dropout_transition=2[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
+                        '-shortest',            # Ensure output duration matches video
                         merged_path
                     ]
             else:
