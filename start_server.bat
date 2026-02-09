@@ -25,6 +25,6 @@ REM Start the server
 echo Starting API server...
 echo API will be available at: http://localhost:8000
 echo.
-python -m app.main
+python -m uvicorn app.main:app --reload --port 8000
 
 pause 
