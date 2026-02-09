@@ -14,6 +14,7 @@ import requests
 import httpx
 import subprocess
 import math
+import threading
 from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
@@ -25,6 +26,7 @@ import numpy as np
 from app.logging_config import get_logger
 from app.utils.supabase_utils import supabase_manager
 from app.config import settings
+from app.utils.task_management import create_task, get_task_status, complete_task, fail_task, start_task, update_task_progress, TaskType, TaskStatus
 
 logger = get_logger(__name__)
 
@@ -46,6 +48,7 @@ class ImageProcessingService:
     def __init__(self):
         self._temp_dir = self._get_temp_dir()
         self._check_ffmpeg()
+        self._active_threads = {}  # Track background threads for image merge tasks
 
     def _get_temp_dir(self) -> Path:
         """Get or create the temp directory for temporary files."""
@@ -63,13 +66,13 @@ class ImageProcessingService:
                 timeout=5
             )
             if result.returncode == 0:
-                logger.info("✅ FFmpeg is available for video processing")
+                logger.info("FFmpeg is available for video processing")
             else:
-                logger.warning("⚠️  FFmpeg check returned non-zero exit code")
+                logger.warning("FFmpeg check returned non-zero exit code")
         except FileNotFoundError:
-            logger.error("❌ FFmpeg not found! Video merge will fail. Install from: https://ffmpeg.org/download.html")
+            logger.error("FFmpeg not found! Video merge will fail. Install from: https://ffmpeg.org/download.html")
         except Exception as e:
-            logger.warning(f"⚠️  Could not check FFmpeg availability: {e}")
+            logger.warning(f"Could not check FFmpeg availability: {e}")
 
     def remove_background(self, image_url: str, scene_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -607,6 +610,195 @@ class ImageProcessingService:
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to clean up temporary file {temp_path}: {cleanup_error}")
 
+    def start_image_merge_task(
+        self,
+        product_image_url: str,
+        background_video_url: str,
+        scene_id: str,
+        user_id: str,
+        short_id: str,
+        scale: float = 0.4,
+        position: str = "center",
+        duration: Optional[int] = None,
+        add_animation: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Start an async image-video merge task (Scene2 generation).
+        Returns immediately with a task_id for polling.
+        
+        Args:
+            product_image_url: URL of the product image
+            background_video_url: URL of the background video
+            scene_id: Scene ID
+            user_id: User ID
+            short_id: Short ID (for task creation)
+            scale: Product scale relative to video width
+            position: Product position on video
+            duration: Optional duration in seconds
+            add_animation: Whether to add animations
+            
+        Returns:
+            Dict with task_id, status, and message
+        """
+        try:
+            logger.info(f"Creating async image merge task for scene {scene_id}")
+            
+            # Create task using task management system
+            task_id = create_task(
+                task_type=TaskType.VIDEO_GENERATION,  # Reuse VIDEO_GENERATION type
+                user_id=user_id,
+                scene_id=scene_id,
+                short_id=short_id,
+                task_name="Scene2 Image-Video Merge",
+                description=f"Merge product image with background video for scene {scene_id}"
+            )
+            
+            if not task_id:
+                raise Exception("Failed to create image merge task")
+            
+            logger.info(f"Created task {task_id} for scene {scene_id}")
+            
+            # Start background thread
+            thread = threading.Thread(
+                target=self._process_image_merge_task,
+                args=(
+                    task_id,
+                    product_image_url,
+                    background_video_url,
+                    scene_id,
+                    user_id,
+                    scale,
+                    position,
+                    duration,
+                    add_animation
+                ),
+                daemon=True,
+                name=f"image_merge_{task_id}"
+            )
+            thread.start()
+            
+            # Store thread reference
+            self._active_threads[task_id] = thread
+            
+            logger.info(f"Started background thread for task {task_id}")
+            
+            return {
+                "task_id": task_id,
+                "status": "pending",
+                "scene_id": scene_id,
+                "user_id": user_id,
+                "message": "Image-video merge task started",
+                "created_at": datetime.utcnow().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to start image merge task: {e}", exc_info=True)
+            raise
+    
+    def _process_image_merge_task(
+        self,
+        task_id: str,
+        product_image_url: str,
+        background_video_url: str,
+        scene_id: str,
+        user_id: str,
+        scale: float,
+        position: str,
+        duration: Optional[int],
+        add_animation: bool
+    ):
+        """
+        Background worker that processes the image-video merge.
+        Updates task status as it progresses.
+        """
+        try:
+            logger.info(f"Processing image merge task {task_id}")
+            
+            # Update task to processing
+            start_task(task_id)
+            
+            # Perform the actual merge (this is the synchronous method)
+            result = self.merge_image_with_video(
+                product_image_url=product_image_url,
+                background_video_url=background_video_url,
+                scene_id=scene_id,
+                user_id=user_id,
+                scale=scale,
+                position=position,
+                duration=duration,
+                add_animation=add_animation
+            )
+            
+            # Update task based on result
+            if result['success']:
+                complete_task(task_id, metadata={"video_url": result['video_url']})
+                logger.info(f"Task {task_id} completed successfully")
+            else:
+                fail_task(task_id, error_message=result.get('error', 'Unknown error'))
+                logger.error(f"Task {task_id} failed: {result.get('error')}")
+                
+        except Exception as e:
+            logger.error(f"Error processing image merge task {task_id}: {e}", exc_info=True)
+            fail_task(task_id, error_message=str(e))
+        finally:
+            # Clean up thread reference
+            if task_id in self._active_threads:
+                del self._active_threads[task_id]
+    
+    def get_task_status(self, task_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get the status of an image merge task.
+        
+        Args:
+            task_id: Task ID to check
+            
+        Returns:
+            Dict with task information or None if not found
+        """
+        try:
+            task_info = get_task_status(task_id)
+            if not task_info:
+                return None
+            
+            # Convert Task object to dict if needed
+            if not isinstance(task_info, dict):
+                metadata = task_info.task_metadata or {}
+                task_info = {
+                    "task_id": task_info.task_id,
+                    "status": task_info.task_status,
+                    "scene_id": metadata.get("scene_id"),
+                    "user_id": task_info.user_id,
+                    "message": task_info.task_status_message,
+                    "created_at": task_info.created_at,
+                    "updated_at": task_info.updated_at,
+                    "error_message": task_info.error_message,
+                    "metadata": metadata
+                }
+            
+            # Format response similar to video generation tasks
+            response = {
+                "task_id": task_id,
+                "status": task_info.get('status'),
+                "scene_id": task_info.get('scene_id'),
+                "user_id": task_info.get('user_id'),
+                "message": task_info.get('message', ''),
+                "created_at": task_info.get('created_at').isoformat() if task_info.get('created_at') else None,
+                "updated_at": task_info.get('updated_at').isoformat() if task_info.get('updated_at') else None,
+                "error_message": task_info.get('error_message')
+            }
+            
+            # Add video_url if completed
+            if task_info.get('status') == TaskStatus.COMPLETED:
+                metadata = task_info.get('metadata', {})
+                if isinstance(metadata, dict):
+                    response['video_url'] = metadata.get('video_url')
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error getting task status for {task_id}: {e}", exc_info=True)
+            return None
+
     def merge_image_with_video(
         self,
         product_image_url: str,
@@ -643,10 +835,10 @@ class ImageProcessingService:
         
         try:
             print("\n" + "="*80)
-            print("🎬 SCENE 2 GENERATION - VIDEO MERGE STARTED")
+            print("SCENE 2 GENERATION - VIDEO MERGE STARTED")
             print("="*80)
-            logger.info(f"🚀 Starting image-video merge for scene {scene_id}")
-            logger.info(f"📦 Parameters:")
+            logger.info(f"Starting image-video merge for scene {scene_id}")
+            logger.info(f"Parameters:")
             logger.info(f"   - Scene ID: {scene_id}")
             logger.info(f"   - User ID: {user_id}")
             logger.info(f"   - Product Scale: {scale * 100}%")
@@ -655,23 +847,23 @@ class ImageProcessingService:
             logger.info(f"   - Animation: {'Enabled (zoom + float)' if add_animation else 'Disabled'}")
             
             # Step 1: Download product image
-            print("\n📥 STEP 1/5: Downloading Product Image")
+            print("\nSTEP 1/5: Downloading Product Image")
             print("-" * 80)
-            logger.info(f"🖼️  Product image URL: {product_image_url[:80]}...")
+            logger.info(f"Product image URL: {product_image_url[:80]}...")
             temp_product_path = self._download_image_from_url(product_image_url)
-            logger.info(f"✅ Product image downloaded: {temp_product_path}")
+            logger.info(f"Product image downloaded: {temp_product_path}")
             
             # Step 2: Download background video
-            print("\n📥 STEP 2/5: Downloading Background Video")
+            print("\nSTEP 2/5: Downloading Background Video")
             print("-" * 80)
-            logger.info(f"🎥 Background video URL: {background_video_url[:80]}...")
+            logger.info(f"Background video URL: {background_video_url[:80]}...")
             temp_video_path = self._download_video_from_url(background_video_url)
-            logger.info(f"✅ Background video downloaded: {temp_video_path}")
+            logger.info(f"Background video downloaded: {temp_video_path}")
             
             # Step 3: Merge using OpenCV
-            print("\n🎨 STEP 3/5: Merging Product with Video (OpenCV Processing)")
+            print("\nSTEP 3/5: Merging Product with Video (OpenCV Processing)")
             print("-" * 80)
-            logger.info("🔄 Starting OpenCV video processing...")
+            logger.info("Starting OpenCV video processing...")
             temp_output_path = self._merge_with_opencv(
                 temp_product_path,
                 temp_video_path,
@@ -680,32 +872,32 @@ class ImageProcessingService:
                 duration=duration,
                 add_animation=add_animation
             )
-            logger.info(f"✅ Video merge completed: {temp_output_path}")
+            logger.info(f"Video merge completed: {temp_output_path}")
             
             # Step 4: Upload to Supabase storage
-            print("\n☁️  STEP 4/5: Uploading Merged Video to Supabase")
+            print("\nSTEP 4/5: Uploading Merged Video to Supabase")
             print("-" * 80)
-            logger.info("📤 Uploading video to Supabase storage...")
+            logger.info("Uploading video to Supabase storage...")
             video_url = self._upload_video_to_supabase(
                 temp_output_path,
                 scene_id=scene_id,
                 user_id=user_id
             )
-            logger.info(f"✅ Video uploaded successfully")
-            logger.info(f"🔗 Video URL: {video_url}")
+            logger.info(f"Video uploaded successfully")
+            logger.info(f"Video URL: {video_url}")
             
             # Step 5: Update scene in database
-            print("\n💾 STEP 5/5: Updating Database")
+            print("\nSTEP 5/5: Updating Database")
             print("-" * 80)
-            logger.info(f"📝 Updating scene {scene_id} in video_scenes table...")
+            logger.info(f"Updating scene {scene_id} in video_scenes table...")
             self._update_scene_video_url(scene_id, video_url)
-            logger.info(f"✅ Database updated successfully")
+            logger.info(f"Database updated successfully")
             
             print("\n" + "="*80)
-            print("✅ SCENE 2 GENERATION COMPLETED SUCCESSFULLY")
+            print("SCENE 2 GENERATION COMPLETED SUCCESSFULLY")
             print("="*80)
-            logger.info(f"🎉 Image-video merge completed successfully for scene {scene_id}")
-            logger.info(f"🔗 Final video URL: {video_url}")
+            logger.info(f"Image-video merge completed successfully for scene {scene_id}")
+            logger.info(f"Final video URL: {video_url}")
             print()
             
             return {
@@ -717,9 +909,9 @@ class ImageProcessingService:
         except Exception as e:
             error_msg = f"Image-video merge failed: {str(e)}"
             print("\n" + "="*80)
-            print("❌ SCENE 2 GENERATION FAILED")
+            print("SCENE 2 GENERATION FAILED")
             print("="*80)
-            logger.error(f"❌ Error: {error_msg}", exc_info=True)
+            logger.error(f"Error: {error_msg}", exc_info=True)
             print()
             return {
                 'success': False,
@@ -810,10 +1002,10 @@ class ImageProcessingService:
             if duration:
                 max_frames = int(fps * duration)
                 total_frames = min(total_frames, max_frames)
-                logger.info(f"⏱️  Duration limited to {duration}s ({max_frames} frames)")
+                logger.info(f"Duration limited to {duration}s ({max_frames} frames)")
             
             video_duration = total_frames / fps
-            logger.info(f"📹 Input Video Info:")
+            logger.info(f"Input Video Info:")
             logger.info(f"   - Original Resolution: {original_width}x{original_height}")
             logger.info(f"   - Output Resolution: {width}x{height} (1080p HD)")
             logger.info(f"   - FPS: {fps}")
@@ -824,7 +1016,7 @@ class ImageProcessingService:
             product_img = Image.open(product_path).convert("RGBA")
             product_np = np.array(product_img)
             
-            logger.info(f"🖼️  Product Image: {product_np.shape[1]}x{product_np.shape[0]} pixels")
+            logger.info(f"Product Image: {product_np.shape[1]}x{product_np.shape[0]} pixels")
             
             # Create output video - use temp AVI first for better compatibility
             temp_output_path = str(self._temp_dir / f"merged-temp-{uuid.uuid4()}.avi")
@@ -834,8 +1026,8 @@ class ImageProcessingService:
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
             out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
             
-            logger.info(f"💾 Temp output file: {temp_output_path}")
-            logger.info(f"💾 Final output file: {output_path}")
+            logger.info(f"Temp output file: {temp_output_path}")
+            logger.info(f"Final output file: {output_path}")
             
             # Animation parameters
             zoom_duration = 3.0 if add_animation else 0.0
@@ -853,9 +1045,9 @@ class ImageProcessingService:
             last_log_time = 0
             
             if original_width != width or original_height != height:
-                logger.info(f"🔄 Each frame will be upscaled: {original_width}x{original_height} → {width}x{height}")
+                logger.info(f"Each frame will be upscaled: {original_width}x{original_height} -> {width}x{height}")
             
-            logger.info(f"🎬 Starting frame processing...")
+            logger.info(f"Starting frame processing...")
             print(f"   Progress: [", end="", flush=True)
             
             while frame_idx < total_frames:
@@ -970,21 +1162,21 @@ class ImageProcessingService:
             cap.release()
             out.release()
             
-            logger.info(f"✅ OpenCV processing complete")
-            logger.info(f"💾 Temp AVI saved to: {temp_output_path}")
+            logger.info(f"OpenCV processing complete")
+            logger.info(f"Temp AVI saved to: {temp_output_path}")
             
             # Convert to H.264 MP4 using FFmpeg for better compatibility
-            logger.info(f"🎞️  Converting to H.264 MP4 with FFmpeg...")
+            logger.info(f"Converting to H.264 MP4 with FFmpeg...")
             self._convert_to_h264(temp_output_path, output_path)
             
             # Clean up temp AVI file
             try:
                 os.unlink(temp_output_path)
-                logger.info(f"🗑️  Cleaned up temp AVI file")
+                logger.info(f"Cleaned up temp AVI file")
             except Exception as e:
                 logger.warning(f"Failed to clean up temp file: {e}")
             
-            logger.info(f"💾 Final MP4 saved to: {output_path}")
+            logger.info(f"Final MP4 saved to: {output_path}")
             return output_path
             
         except Exception as e:
@@ -1018,7 +1210,7 @@ class ImageProcessingService:
                 output_path
             ]
             
-            logger.info(f"🎞️  FFmpeg Quality Settings:")
+            logger.info(f"FFmpeg Quality Settings:")
             logger.info(f"   - Resolution: 1920x1080 (forced)")
             logger.info(f"   - Codec: H.264 High Profile")
             logger.info(f"   - Bitrate: 8Mbps (high quality)")
@@ -1037,7 +1229,7 @@ class ImageProcessingService:
                 logger.error(f"FFmpeg stderr: {result.stderr}")
                 raise Exception(f"FFmpeg conversion failed with code {result.returncode}")
             
-            logger.info(f"✅ FFmpeg conversion complete")
+            logger.info(f"FFmpeg conversion complete")
             
         except FileNotFoundError:
             raise Exception("FFmpeg not found! Please install FFmpeg: https://ffmpeg.org/download.html")

@@ -335,9 +335,12 @@ class MergeImageWithVideoRequest(BaseModel):
 
 class MergeImageWithVideoResponse(BaseModel):
     success: bool = Field(..., description="Whether the operation succeeded")
+    task_id: Optional[str] = Field(None, description="Task ID for polling (async mode)")
+    status: Optional[str] = Field(None, description="Task status (pending/processing/completed/failed)")
     video_url: Optional[str] = Field(None, description="URL of the merged video")
     message: str = Field(..., description="Status message")
     error: Optional[str] = Field(None, description="Error message if failed")
+    created_at: Optional[str] = Field(None, description="Task creation time")
 
 
 # Session Management Models
