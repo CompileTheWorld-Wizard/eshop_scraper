@@ -321,6 +321,9 @@ class Settings:
     CLEANUP_INTERVAL_HOURS: int = int(os.getenv("CLEANUP_INTERVAL_HOURS", "24"))
     CLEANUP_DAYS_THRESHOLD: int = int(os.getenv("CLEANUP_DAYS_THRESHOLD", "2"))
     
+    # Remotion Server Settings
+    REMOTION_SERVER_URL: str = os.getenv("REMOTION_SERVER_URL", "http://localhost:5050")
+    
     @classmethod
     def get_browser_for_domain(cls, domain: str) -> str:
         """Get the appropriate browser for a given domain"""
