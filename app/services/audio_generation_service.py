@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from elevenlabs import ElevenLabs
 
 from app.models import (
-    AudioGenerationRequest, AudioGenerationResponse, GeneratedScenario
+    AudioGenerationRequest, AudioGenerationResponse
 )
 from app.utils.mongodb_manager import mongodb_manager
 from app.utils.supabase_utils import supabase_manager
@@ -102,18 +102,30 @@ class AudioGenerationService:
             test_audio_duration = asyncio.run(self._calculate_audio_duration(test_audio_result["url"]))
             test_text = test_audio_result.get("text", "")
 
-            # Step 2: Get scenario information
-            logger.info("Getting scenario information...")
-            scenario = asyncio.run(self._get_scenario_by_short_id(request.short_id))
-            if not scenario:
-                raise Exception(f"No scenario found for short_id: {request.short_id}. Please ensure the scenario exists in the database.")
+            # Step 2: Get short description from database and use default settings
+            short_info = asyncio.run(self._get_short_description(request.short_id))
+            if not short_info:
+                raise Exception(f"No short found for short_id: {request.short_id}. Please ensure the short exists in the database.")
             
-            # Log target duration from scenario
-            logger.info(f"Target duration: {scenario.total_duration} seconds")
+            # Default values for audio generation
+            total_duration = 24  # Default: 24 seconds
+            style = 'trendy-influencer-vlog'  # Default style
+            mood = 'energetic'  # Default mood
+            
+            # Log target duration
+            logger.info(f"Using default settings - Duration: {total_duration}s, Style: {style}, Mood: {mood}")
 
             # Step 3: Generate audio script using OpenAI
             logger.info("Generating audio script...")
-            audio_script = asyncio.run(self._generate_audio_script(scenario, words_per_minute, test_text, test_audio_duration))
+            audio_script = asyncio.run(self._generate_audio_script(
+                total_duration=total_duration,
+                style=style,
+                mood=mood,
+                words_per_minute=words_per_minute,
+                test_text=test_text,
+                test_audio_duration=test_audio_duration,
+                short_info=short_info
+            ))
             if not audio_script:
                 raise Exception("Failed to generate audio script")
 
@@ -144,7 +156,16 @@ class AudioGenerationService:
 
             # Step 8: Calculate duration using signed URL
             duration = asyncio.run(self._calculate_audio_duration(signed_audio_url))
-            logger.info(f"Actual audio duration: {duration:.2f} seconds (target: {scenario.total_duration} seconds, difference: {duration - scenario.total_duration:.2f}s)")
+            logger.info(f"Actual audio duration: {duration:.2f} seconds (target: {total_duration} seconds, difference: {duration - total_duration:.2f}s)")
+            
+            # Validate duration doesn't exceed target
+            if duration > total_duration:
+                logger.error(f"⚠️ AUDIO TOO LONG! Generated audio is {duration:.2f}s, exceeding target of {total_duration}s by {duration - total_duration:.2f}s")
+                logger.error(f"This audio may not fit properly in the video. Consider regenerating with stricter word count.")
+            elif duration > total_duration * 0.95:
+                logger.warning(f"⚠️ Audio duration ({duration:.2f}s) is very close to target ({total_duration}s). Only {total_duration - duration:.2f}s buffer remaining.")
+            else:
+                logger.info(f"✅ Audio duration ({duration:.2f}s) is within target ({total_duration}s). Buffer: {total_duration - duration:.2f}s")
             
             # Step 9: Save to Supabase audio_info table with PUBLIC URL (not signed URL)
             # The public URL is stable and doesn't expire, so it's stored in the database
@@ -195,6 +216,27 @@ class AudioGenerationService:
                 
         except Exception as e:
             logger.error(f"Error fetching target_language for short_id {short_id}: {e}")
+            return None
+
+    async def _get_short_description(self, short_id: str) -> Optional[Dict[str, Any]]:
+        """Get short title and description from shorts table"""
+        try:
+            if not supabase_manager.is_connected():
+                supabase_manager.ensure_connection()
+            
+            # Get title and description from shorts table
+            result = supabase_manager.client.table('shorts').select('title, description').eq('id', short_id).execute()
+            
+            if result.data and len(result.data) > 0:
+                short_data = result.data[0]
+                logger.info(f"Found short info for short_id {short_id}: title='{short_data.get('title', 'N/A')}'")
+                return short_data
+            else:
+                logger.warning(f"No shorts record found for short_id: {short_id}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error fetching short description for short_id {short_id}: {e}")
             return None
 
     async def _get_or_generate_test_audio(self, voice_id: str, user_id: str, language: str = "en-US") -> Optional[Dict[str, Any]]:
@@ -357,71 +399,29 @@ class AudioGenerationService:
             logger.warning("Using default WPM due to analysis error")
             return 150.0  # Default WPM
 
-    async def _get_scenario_by_short_id(self, short_id: str) -> Optional[GeneratedScenario]:
-        """Get scenario information from database using short_id"""
-        try:
-            if not supabase_manager.is_connected():
-                supabase_manager.ensure_connection()
-
-            # First, get scenario_id from video_scenarios table using short_id
-            scenario_result = supabase_manager.client.table('video_scenarios').select('id').eq('short_id', short_id).execute()
-            
-            if not scenario_result.data or len(scenario_result.data) == 0:
-                logger.error(f"No scenario found for short_id: {short_id}")
-                return None
-            
-            scenario_id = scenario_result.data[0]['id']
-            logger.info(f"Found scenario_id {scenario_id} for short_id {short_id}")
-
-            # Get full scenario data from video_scenarios table
-            try:
-                result = supabase_manager.client.table('video_scenarios').select('*').eq('id', scenario_id).execute()
-                if result.data and len(result.data) > 0:
-                    scenario_data = result.data[0]
-                    logger.info(f"Found scenario data in table: video_scenarios")
-                    
-                    # Convert to GeneratedScenario object
-                    return GeneratedScenario(
-                        title=scenario_data.get('title', f'Short {short_id[:8]}'),
-                        description=scenario_data.get('description', 'Product showcase video'),
-                        detected_demographics=None,
-                        scenes=[],
-                        total_duration=scenario_data.get('total_duration', 30),
-                        style=scenario_data.get('style', 'trendy-influencer-vlog'),
-                        mood=scenario_data.get('mood', 'energetic'),
-                        resolution=scenario_data.get('resolution', '1080x1920'),
-                        environment=scenario_data.get('environment', 'indoor'),
-                        thumbnail_prompt=scenario_data.get('thumbnail_prompt'),
-                        thumbnail_url=scenario_data.get('thumbnail_url'),
-                        thumbnail_text_overlay_prompt=scenario_data.get('thumbnail_text_overlay_prompt')
-                    )
-                else:
-                    logger.error(f"No scenario data found for scenario_id {scenario_id}")
-                    return None
-                    
-            except Exception as table_error:
-                logger.error(f"Error fetching scenario data from video_scenarios table: {table_error}")
-                return None
-
-        except Exception as e:
-            logger.error(f"Failed to get scenario for short_id {short_id}: {e}")
-            return None
-
-
-    async def _generate_audio_script(self, scenario: GeneratedScenario, words_per_minute: float, test_text: str = "", test_audio_duration: float = 0) -> Optional[str]:
-        """Generate audio script using OpenAI based on scenario and speed"""
+    async def _generate_audio_script(
+        self, 
+        total_duration: int,
+        style: str,
+        mood: str,
+        words_per_minute: float, 
+        test_text: str = "", 
+        test_audio_duration: float = 0,
+        short_info: Optional[Dict[str, Any]] = None
+    ) -> Optional[str]:
+        """Generate audio script using OpenAI based on video settings and speed"""
         try:
             if not self.openai_client:
                 logger.error("OpenAI client not initialized")
                 return None
             
-            # Calculate target word count with 15% safety buffer to ensure audio stays under duration
+            # Calculate target word count with 25% safety buffer to ensure audio stays under duration
             # Using larger buffer because GPT may not strictly follow word count and actual speech rate can vary
-            target_word_count = (scenario.total_duration / 60) * words_per_minute
-            conservative_word_count = int(target_word_count * 0.85)  # 15% buffer to ensure audio ≤ target duration
+            target_word_count = (total_duration / 60) * words_per_minute
+            conservative_word_count = int(target_word_count * 0.75)  # 25% buffer to ensure audio ≤ target duration
             estimated_characters = conservative_word_count * 5  # Rough estimate: ~5 characters per word
             
-            logger.info(f"Target duration: {scenario.total_duration}s, WPM: {words_per_minute:.1f}, Target words: {conservative_word_count} (with 15% buffer, original: {int(target_word_count)} words)")
+            logger.info(f"Target duration: {total_duration}s, WPM: {words_per_minute:.1f}, Target words: {conservative_word_count} (with 25% buffer, original: {int(target_word_count)} words)")
             
             system_message = f"""You are an expert copywriter for social media product promotion videos.
 Create a clean, spoken audio script with NO stage directions, music cues, emojis, or brackets.
@@ -432,11 +432,11 @@ SCRIPT STRUCTURE (3 parts):
 3. CTA (2-3 seconds): Clear call-to-action that's casual but persuasive. Encourage the listener to take action with a friendly prompt or playful invitation.
 
 REQUIREMENTS:
-- Duration: {scenario.total_duration} seconds (MUST NOT EXCEED - audio must be shorter than or equal to this)
+- Duration: {total_duration} seconds (MUST NOT EXCEED - audio must be shorter than or equal to this)
 - Word count: EXACTLY {conservative_word_count} words (strict requirement - count carefully)
 - Character count: Approximately {estimated_characters} characters
-- Style: {scenario.style}
-- Mood: {scenario.mood}
+- Style: {style}
+- Mood: {mood}
 - Write ONLY what will be spoken - no [music cues], no emojis, no stage directions
 - Keep it natural, conversational, and engaging
 - Focus on product benefits and creating desire
@@ -445,27 +445,35 @@ VOICE CALIBRATION:
 This voice speaks at {words_per_minute:.1f} words per minute.
 Example: "{test_text}" took {test_audio_duration:.2f} seconds to speak.
 
-WORD COUNT VALIDATION (CRITICAL):
-The script MUST contain EXACTLY {conservative_word_count} words - no more, no less. This is a hard requirement.
-Before returning the script, count every single word. The audio duration MUST be less than {scenario.total_duration} seconds.
-If the word count is even slightly over {conservative_word_count}, the audio will exceed the target duration. 
-Count carefully and ensure the script contains exactly {conservative_word_count} words.
+WORD COUNT VALIDATION (CRITICAL - MUST FOLLOW):
+The script MUST contain MAXIMUM {conservative_word_count} words - absolutely no more!
+Before returning the script, count every single word. The audio MUST be under {total_duration} seconds.
+If you exceed {conservative_word_count} words, the audio will be TOO LONG and rejected.
+It's better to have slightly fewer words than too many. Aim for {conservative_word_count} words or less.
 
 OUTPUT FORMAT: Return only the clean spoken script without any formatting, labels, or non-spoken elements."""
 
+            # Get short title and description
+            short_title = short_info.get('title', 'Product') if short_info else 'Product'
+            short_description = short_info.get('description', 'Amazing product') if short_info else 'Amazing product'
+
             user_message = f"""Create a promotional audio script for this product:
 
-Title: {scenario.title}
-Description: {scenario.description}"""
+Title: {short_title}
+Description: {short_description}"""
 
             logger.info("Sending request to OpenAI for script generation...")
+            # Limit max_tokens based on conservative word count to prevent overly long scripts
+            # Each word is roughly 1.3 tokens, so add some buffer for response formatting
+            max_tokens_limit = int(conservative_word_count * 1.5)
+            
             response = self.openai_client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=[
                     {"role": "system", "content": system_message},
                     {"role": "user", "content": user_message}
                 ],
-                max_tokens=500,
+                max_tokens=min(max_tokens_limit, 300),  # Cap at 300 tokens max for 24s videos
                 temperature=0.7
             )
 
@@ -474,12 +482,28 @@ Description: {scenario.description}"""
                 actual_word_count = len(script.split())
                 logger.info(f"Generated audio script: {len(script)} characters, {actual_word_count} words (target: {conservative_word_count} words)")
                 
-                # Log warning if word count exceeds target (critical for duration control)
+                # Truncate script if it exceeds target word count to ensure audio stays under duration
                 if actual_word_count > conservative_word_count:
-                    logger.warning(f"⚠️ Generated script has {actual_word_count} words, which EXCEEDS target of {conservative_word_count} words by {actual_word_count - conservative_word_count} words. Audio may exceed target duration!")
+                    logger.warning(f"⚠️ Generated script has {actual_word_count} words, EXCEEDING target of {conservative_word_count} words. Truncating to fit duration...")
+                    words = script.split()
+                    truncated_words = words[:conservative_word_count]
+                    script = ' '.join(truncated_words)
+                    
+                    # Ensure script ends properly (try to end at sentence boundary if possible)
+                    if script and not script[-1] in '.!?':
+                        # Try to find last sentence boundary
+                        last_period = max(script.rfind('.'), script.rfind('!'), script.rfind('?'))
+                        if last_period > len(script) * 0.7:  # If we're at least 70% through
+                            script = script[:last_period + 1]
+                        else:
+                            script = script + '.'
+                    
+                    actual_word_count = len(script.split())
+                    logger.info(f"✂️ Script truncated to {actual_word_count} words to ensure audio ≤ {total_duration}s")
                 elif actual_word_count < conservative_word_count * 0.9:
                     logger.warning(f"Generated script has {actual_word_count} words, which is less than target of {conservative_word_count} words by more than 10%")
                 
+                logger.info(f"Final script: {len(script)} characters, {actual_word_count} words")
                 return script
 
             return None
@@ -961,7 +985,7 @@ Description: {scenario.description}"""
             from app.utils.credit_utils import deduct_credits, check_user_credits
             
             # Create description for credit deduction
-            description = f"Generated audio for scenario {request.short_id}: {script[:50]}..."
+            description = f"Generated audio for short {request.short_id}: {script[:50]}..."
             
             # Deduct credits for audio generation
             success = deduct_credits(
@@ -1009,7 +1033,7 @@ Description: {scenario.description}"""
                 logger.error("Supabase client not connected")
                 return False
 
-            # Check if audio_info record already exists for this scenario
+            # Check if audio_info record already exists for this short
             existing_audio = await self._get_existing_audio_info(request.short_id)
             
             audio_data = {
@@ -1034,25 +1058,25 @@ Description: {scenario.description}"""
 
             if existing_audio:
                 # Update existing record with failed status
-                logger.info(f"Updating existing audio_info record with failed status for scenario {request.short_id}")
+                logger.info(f"Updating existing audio_info record with failed status for short {request.short_id}")
                 result = supabase_manager.client.table('audio_info').update(audio_data).eq('short_id', request.short_id).execute()
                 
                 if result.data:
-                    logger.info(f"Successfully updated audio_info record with failed status for scenario {request.short_id}")
+                    logger.info(f"Successfully updated audio_info record with failed status for short {request.short_id}")
                     return True
                 else:
-                    logger.error(f"Failed to update audio_info record with failed status for scenario {request.short_id}")
+                    logger.error(f"Failed to update audio_info record with failed status for short {request.short_id}")
                     return False
             else:
                 # Create new record with failed status
-                logger.info(f"Creating new audio_info record with failed status for scenario {request.short_id}")
+                logger.info(f"Creating new audio_info record with failed status for short {request.short_id}")
                 result = supabase_manager.client.table('audio_info').insert(audio_data).execute()
                 
                 if result.data:
-                    logger.info(f"Successfully created audio_info record with failed status for scenario {request.short_id}")
+                    logger.info(f"Successfully created audio_info record with failed status for short {request.short_id}")
                     return True
                 else:
-                    logger.error(f"Failed to create audio_info record with failed status for scenario {request.short_id}")
+                    logger.error(f"Failed to create audio_info record with failed status for short {request.short_id}")
                     return False
 
         except Exception as e:
@@ -1066,7 +1090,7 @@ Description: {scenario.description}"""
                 logger.error("Supabase client not connected")
                 return False
 
-            # Check if audio_info record already exists for this scenario
+            # Check if audio_info record already exists for this short
             existing_audio = await self._get_existing_audio_info(request.short_id)
             
             # Build metadata according to the new format
@@ -1107,25 +1131,25 @@ Description: {scenario.description}"""
 
             if existing_audio:
                 # Update existing record
-                logger.info(f"Updating existing audio_info record for scenario {request.short_id}")
+                logger.info(f"Updating existing audio_info record for short {request.short_id}")
                 result = supabase_manager.client.table('audio_info').update(audio_data).eq('short_id', request.short_id).execute()
                 
                 if result.data:
-                    logger.info(f"Successfully updated audio_info record for scenario {request.short_id}")
+                    logger.info(f"Successfully updated audio_info record for short {request.short_id}")
                     return True
                 else:
-                    logger.error(f"Failed to update audio_info record for scenario {request.short_id}")
+                    logger.error(f"Failed to update audio_info record for short {request.short_id}")
                     return False
             else:
                 # Create new record
-                logger.info(f"Creating new audio_info record for scenario {request.short_id}")
+                logger.info(f"Creating new audio_info record for short {request.short_id}")
                 result = supabase_manager.client.table('audio_info').insert(audio_data).execute()
                 
                 if result.data:
-                    logger.info(f"Successfully created audio_info record for scenario {request.short_id}")
+                    logger.info(f"Successfully created audio_info record for short {request.short_id}")
                     return True
                 else:
-                    logger.error(f"Failed to create audio_info record for scenario {request.short_id}")
+                    logger.error(f"Failed to create audio_info record for short {request.short_id}")
                     return False
 
         except Exception as e:
@@ -1133,7 +1157,7 @@ Description: {scenario.description}"""
             return False
 
     async def _get_existing_audio_info(self, short_id: str) -> Optional[Dict[str, Any]]:
-        """Get existing audio_info record for a scenario"""
+        """Get existing audio_info record for a short"""
         try:
             if not supabase_manager.is_connected():
                 logger.error("Supabase client not connected")

@@ -245,9 +245,15 @@ class ImageProcessingService:
             )
 
             # Update the scene's image_url in the database (only if real scene_id provided)
+            # This is a non-fatal operation - if it fails, we still return the image URL
             if scene_id and scene_id not in ["temp", "anonymous", ""]:
-                logger.info(f"Updating scene {scene_id} with new image URL...")
-                self._update_scene_image_url(scene_id, supabase_url)
+                try:
+                    logger.info(f"Updating scene {scene_id} with new image URL...")
+                    self._update_scene_image_url(scene_id, supabase_url)
+                except Exception as db_error:
+                    # Log the error but don't fail the entire operation
+                    logger.warning(f"Failed to update scene in database, but image upload succeeded: {db_error}")
+                    logger.info(f"Image URL is still available at: {supabase_url}")
 
             logger.info(f"Image compositing completed successfully. Image URL: {supabase_url}")
 
@@ -508,16 +514,30 @@ class ImageProcessingService:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
 
+            # First check if the scene exists
+            logger.info(f"Checking if scene {scene_id} exists...")
+            check_result = supabase_manager.client.table('video_scenes').select('id').eq('id', scene_id).execute()
+            
+            if not check_result.data or len(check_result.data) == 0:
+                logger.warning(f"Scene {scene_id} not found in database. Skipping image_url update.")
+                logger.info(f"Image was successfully uploaded to: {image_url}")
+                # Don't raise an exception - the image was uploaded successfully
+                # The scene might not exist yet, which is okay for some workflows
+                return
+
             # Update scene with new image URL
+            logger.info(f"Updating scene {scene_id} with new image URL...")
             result = supabase_manager.client.table('video_scenes').update({
                 'image_url': image_url,
                 'updated_at': datetime.now().isoformat()
             }).eq('id', scene_id).execute()
 
-            if not result.data:
-                raise Exception("Failed to update scene with new image URL")
+            if not result.data or len(result.data) == 0:
+                logger.error(f"Update query returned empty result. Scene ID: {scene_id}")
+                logger.error(f"Result: {result}")
+                raise Exception(f"Failed to update scene {scene_id} - update returned no data")
 
-            logger.info(f"Updated scene {scene_id} with new image URL: {image_url}")
+            logger.info(f"✅ Successfully updated scene {scene_id} with new image URL: {image_url}")
 
         except Exception as e:
             logger.error(f"Failed to update scene {scene_id} with image URL: {e}")
@@ -716,13 +736,6 @@ class ImageProcessingService:
             
             # Update task to processing
             start_task(task_id)
-            task_manager.update_task(
-                task_id=task_id,
-                update_data={
-                    "status": TaskStatus.PROCESSING,
-                    "message": "Merging product image with background video..."
-                }
-            )
             
             # Perform the actual merge (this is the synchronous method)
             result = self.merge_image_with_video(
@@ -769,33 +782,49 @@ class ImageProcessingService:
             
             # Convert Task object to dict if needed
             if not isinstance(task_info, dict):
-                task_info = {
+                # Convert TaskStatus enum to string
+                status = task_info.task_status
+                if hasattr(status, 'value'):
+                    status = status.value
+                
+                # Extract scene_id from task_metadata
+                metadata = task_info.task_metadata or {}
+                scene_id = metadata.get('scene_id') if isinstance(metadata, dict) else None
+                    
+                task_info_dict = {
                     "task_id": task_info.task_id,
-                    "status": task_info.status,
-                    "scene_id": task_info.scene_id,
+                    "status": status,
+                    "scene_id": scene_id,
                     "user_id": task_info.user_id,
-                    "message": task_info.message,
-                    "created_at": task_info.created_at,
-                    "updated_at": task_info.updated_at,
+                    "message": task_info.task_status_message or "",
+                    "created_at": task_info.created_at.isoformat() if task_info.created_at else None,
+                    "updated_at": task_info.updated_at.isoformat() if task_info.updated_at else None,
                     "error_message": task_info.error_message,
-                    "metadata": task_info.metadata
+                    "metadata": metadata
                 }
+            else:
+                task_info_dict = task_info
+                # Convert status enum to string if needed
+                status = task_info_dict.get('status')
+                if hasattr(status, 'value'):
+                    task_info_dict['status'] = status.value
             
             # Format response similar to video generation tasks
             response = {
                 "task_id": task_id,
-                "status": task_info.get('status'),
-                "scene_id": task_info.get('scene_id'),
-                "user_id": task_info.get('user_id'),
-                "message": task_info.get('message', ''),
-                "created_at": task_info.get('created_at'),
-                "updated_at": task_info.get('updated_at'),
-                "error_message": task_info.get('error_message')
+                "status": task_info_dict.get('status'),
+                "scene_id": task_info_dict.get('scene_id'),
+                "user_id": task_info_dict.get('user_id'),
+                "message": task_info_dict.get('message', ''),
+                "created_at": task_info_dict.get('created_at'),
+                "updated_at": task_info_dict.get('updated_at'),
+                "error_message": task_info_dict.get('error_message')
             }
             
             # Add video_url if completed
-            if task_info.get('status') == TaskStatus.COMPLETED:
-                metadata = task_info.get('metadata', {})
+            status_str = str(response.get('status', '')).lower()
+            if status_str == 'completed' or status_str == TaskStatus.COMPLETED.value:
+                metadata = task_info_dict.get('metadata', {})
                 if isinstance(metadata, dict):
                     response['video_url'] = metadata.get('video_url')
             

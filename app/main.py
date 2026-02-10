@@ -12,7 +12,6 @@ import threading
 
 from app.config import settings
 from app.api.routes import router
-from app.api.remotion_routes import router as remotion_router
 from app.services.scraping_service import scraping_service
 from app.services.scheduler_service import start_scheduler, stop_scheduler
 from app.security import security_middleware, cleanup_security_data
@@ -202,9 +201,6 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 # Include API routes
 app.include_router(router, prefix=settings.API_V1_STR)
-
-# Include Remotion proxy routes (with API_V1_STR prefix to match Next.js expectations)
-app.include_router(remotion_router, prefix=settings.API_V1_STR)
 
 @app.get("/")
 async def root():

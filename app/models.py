@@ -1,4 +1,4 @@
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, ConfigDict
 from typing import Optional, Dict, Any, List
 from enum import Enum
 from datetime import datetime, timezone
@@ -277,70 +277,23 @@ class AudioGenerationResponse(BaseModel):
     subtitle_timing: Optional[List[Dict[str, Any]]] = Field(None, description="Subtitle timing information")
 
 
-# Image Processing Models
-class RemoveBackgroundRequest(BaseModel):
-    image_url: str = Field(..., description="URL of the image to remove background from")
-    scene_id: Optional[str] = Field(None, description="Optional scene ID for organizing files")
-    user_id: str = Field(..., description="User ID associated with the request")
-
-class RemoveBackgroundResponse(BaseModel):
-    success: bool = Field(..., description="Whether the operation succeeded")
-    image_url: Optional[str] = Field(None, description="URL of the background-removed image")
-    message: str = Field(..., description="Status message")
-    error: Optional[str] = Field(None, description="Error message if failed")
-
-class CompositeImagesRequest(BaseModel):
+# Image Compositing Models
+class ImageCompositeRequest(BaseModel):
     background_url: str = Field(..., description="URL of the background image")
-    foreground_url: Optional[str] = Field(None, description="URL of the foreground/overlay image (alias for overlay_url)")
-    overlay_url: Optional[str] = Field(None, description="URL of the overlay image (typically background-removed)")
-    scene_id: Optional[str] = Field(None, description="Optional scene ID for organizing files and updating database")
-    user_id: Optional[str] = Field(None, description="Optional user ID for organizing files")
-
-class CompositeImagesResponse(BaseModel):
-    success: bool = Field(..., description="Whether the operation succeeded")
-    image_url: Optional[str] = Field(None, description="URL of the composited image")
-    message: str = Field(..., description="Status message")
-    error: Optional[str] = Field(None, description="Error message if failed")
-
-class ReplaceBackgroundRequest(BaseModel):
-    product_image_url: str = Field(..., description="URL of the product image")
-    background_image_url: str = Field(..., description="URL of the new background image")
+    overlay_url: str = Field(..., description="URL of the overlay image (product with transparent background)")
     scene_id: str = Field(..., description="Scene ID for organizing files and updating database")
     user_id: str = Field(..., description="User ID for organizing files")
+    position_x: Optional[int] = Field(0, description="X position to place overlay on background (0 = auto-center)")
+    position_y: Optional[int] = Field(0, description="Y position to place overlay on background (0 = auto-center)")
+    resize_overlay: Optional[bool] = Field(True, description="Whether to resize overlay to fit background")
 
-class ReplaceBackgroundResponse(BaseModel):
+
+class ImageCompositeResponse(BaseModel):
     success: bool = Field(..., description="Whether the operation succeeded")
-    image_url: Optional[str] = Field(None, description="URL of the final composited image")
+    image_url: Optional[str] = Field(None, description="URL of the composited image in Supabase (if successful)")
+    error: Optional[str] = Field(None, description="Error message (if failed)")
     message: str = Field(..., description="Status message")
-    error: Optional[str] = Field(None, description="Error message if failed")
-
-class MergeImageWithVideoRequest(BaseModel):
-    product_image_url: str = Field(..., description="URL of the product image (PNG with transparent background)")
-    background_video_url: str = Field(..., description="URL of the background video from Storyblocks")
-    scene_id: str = Field(..., description="Scene ID for organizing files and updating database")
-    user_id: str = Field(..., description="User ID for organizing files")
-    scale: float = Field(0.4, description="Scale of product relative to video width (0.0-1.0)")
-    position: str = Field("center", description="Position of product ('center', 'top', 'bottom', 'left', 'right')")
-    duration: Optional[int] = Field(None, description="Optional duration in seconds (None = full video)")
-    add_animation: bool = Field(True, description="Whether to add zoom and floating animations")
-    
-    # Optional fields that frontend might send (for compatibility)
-    short_id: Optional[str] = Field(None, description="Optional short ID (alias for scene_id)")
-    shortId: Optional[str] = Field(None, description="Optional short ID camelCase (for frontend compatibility)")
-    sceneNumber: Optional[int] = Field(None, description="Optional scene number (not used by backend)")
-    
-    class Config:
-        # Allow extra fields from frontend without validation errors
-        extra = "allow"
-
-class MergeImageWithVideoResponse(BaseModel):
-    success: bool = Field(..., description="Whether the operation succeeded")
-    task_id: Optional[str] = Field(None, description="Task ID for polling (async mode)")
-    status: Optional[str] = Field(None, description="Task status (pending/processing/completed/failed)")
-    video_url: Optional[str] = Field(None, description="URL of the merged video")
-    message: str = Field(..., description="Status message")
-    error: Optional[str] = Field(None, description="Error message if failed")
-    created_at: Optional[str] = Field(None, description="Task creation time")
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="When the request was processed")
 
 
 # Session Management Models
@@ -352,3 +305,93 @@ class SessionInfo(BaseModel):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc), description="When the session was last updated")
     user_id: Optional[str] = Field(None, description="User ID associated with the session")
     status: str = Field("active", description="Session status (active, completed, failed)")
+
+
+# ============================================================================
+# Remotion Scene1 Models (Bridge to Node.js)
+# ============================================================================
+
+class Scene1ProductInfo(BaseModel):
+    title: Optional[str] = Field(None, description="Product name")
+    price: Optional[str] = Field(None, description="Product price")
+    rating: Optional[float] = Field(None, description="Product rating 0-5")
+    reviewCount: Optional[int] = Field(None, description="Number of reviews")
+
+
+class Scene1Metadata(BaseModel):
+    short_id: Optional[str] = Field(None, description="Short ID")
+    scene_id: Optional[str] = Field(None, description="Scene ID from database")
+    sceneNumber: Optional[int] = Field(None, description="Scene number")
+
+
+class GenerateScene1RequestFromNextJS(BaseModel):
+    """Request format coming from Next.js"""
+    imageUrl: Optional[str] = Field(None, description="Image URL directly")
+    shortId: Optional[str] = Field(None, description="Short ID")
+    sceneNumber: Optional[int] = Field(None, description="Scene number")
+    product: Scene1ProductInfo = Field(..., description="Product information")
+
+
+class GenerateScene1Request(BaseModel):
+    """Request format to send to Node.js"""
+    template: str = Field(default="product-modern-v1", description="Remotion template to use")
+    imageUrl: str = Field(..., description="Image URL for video generation")
+    product: Scene1ProductInfo = Field(..., description="Product information")
+    metadata: Optional[Scene1Metadata] = Field(None, description="Additional metadata")
+
+
+class GenerateScene1Response(BaseModel):
+    """
+    Flexible response model that accepts any fields from Node.js server.
+    This allows pass-through of all Node.js response data without modification.
+    """
+    model_config = ConfigDict(extra="allow")  # Allow any extra fields from Node.js
+    
+    # Common fields that might be present
+    taskId: Optional[str] = Field(None, description="Task ID for polling status")
+    id: Optional[str] = Field(None, description="Task ID (alternative field name)")
+    status: Optional[str] = Field(None, description="Task status")
+    message: Optional[str] = Field(None, description="Response message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    
+    # Progress fields
+    stage: Optional[str] = Field(None, description="Current processing stage")
+    progress: Optional[float] = Field(None, description="Progress percentage")
+    
+    # Result fields
+    videoUrl: Optional[str] = Field(None, description="Video URL when completed")
+    
+    # Original request data (echoed back in GET response)
+    template: Optional[str] = Field(None, description="Template used")
+    imageUrl: Optional[str] = Field(None, description="Image URL used")
+    product: Optional[Dict] = Field(None, description="Product data used")
+
+
+# ============================================================================
+# Scene2 (Image-Video Merge) Models (Bridge to Node.js)
+# ============================================================================
+
+class MergeImageWithVideoRequest(BaseModel):
+    """Request format for Scene2 image-video merge"""
+    product_image_url: str = Field(..., description="URL of product image (transparent PNG)")
+    background_video_url: str = Field(..., description="URL of background video")
+    scene_id: str = Field(..., description="Scene ID in database")
+    user_id: str = Field(..., description="User ID")
+    short_id: Optional[str] = Field(None, description="Short ID")
+    shortId: Optional[str] = Field(None, description="Short ID (alternative field name for compatibility)")
+    scale: float = Field(default=0.4, description="Product image scale (0.0-1.0)")
+    position: str = Field(default="center", description="Position (center, top, bottom, left, right)")
+    duration: int = Field(default=8, description="Video duration in seconds")
+    add_animation: bool = Field(default=True, description="Add zoom/floating animation")
+
+
+class MergeImageWithVideoResponse(BaseModel):
+    """Response format for Scene2 image-video merge (Python format with snake_case)"""
+    success: bool = Field(..., description="Whether the operation succeeded")
+    task_id: str = Field(..., description="Task ID for polling status")
+    status: str = Field(..., description="Task status (pending, processing, completed, failed)")
+    video_url: Optional[str] = Field(None, description="Merged video URL when completed")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    progress: Optional[int] = Field(None, description="Progress percentage (0-100)")
+    created_at: Optional[str] = Field(None, description="When the task was created (ISO format)")

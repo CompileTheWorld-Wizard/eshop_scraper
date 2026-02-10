@@ -5,6 +5,8 @@ from fastapi.responses import FileResponse
 from typing import Optional, List
 from datetime import datetime, timezone
 import os
+import httpx
+import json
 
 from app.models import (
     ScrapeRequest, TaskStatusResponse, HealthResponse,
@@ -12,8 +14,9 @@ from app.models import (
     FinalizeShortRequest, FinalizeShortResponse, ImageAnalysisRequest, ImageAnalysisResponse,
     ScenarioGenerationRequest, ScenarioGenerationResponse, SaveScenarioRequest, SaveScenarioResponse,
     TestAudioRequest, TestAudioResponse, AudioGenerationRequest, AudioGenerationResponse,
-    RemoveBackgroundRequest, RemoveBackgroundResponse, CompositeImagesRequest, CompositeImagesResponse,
-    ReplaceBackgroundRequest, ReplaceBackgroundResponse, MergeImageWithVideoRequest, MergeImageWithVideoResponse
+    ImageCompositeRequest, ImageCompositeResponse, GenerateScene1RequestFromNextJS, 
+    GenerateScene1Request, GenerateScene1Response, Scene1Metadata, Scene1ProductInfo,
+    MergeImageWithVideoRequest, MergeImageWithVideoResponse
 )
 from app.services.scraping_service import scraping_service
 from app.services.video_generation_service import video_generation_service
@@ -768,6 +771,77 @@ def cleanup_image_analysis_tasks():
         raise HTTPException(status_code=500, detail=f"Failed to cleanup image analysis tasks: {str(e)}")
 
 
+# ============================================================================
+# Image Compositing Endpoints
+# ============================================================================
+
+@router.post("/image/composite", response_model=ImageCompositeResponse)
+def composite_images(
+    request: ImageCompositeRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> ImageCompositeResponse:
+    """
+    Composite two images together (overlay on top of background).
+    
+    This endpoint accepts URLs for a background image and an overlay image (typically 
+    a product with transparent background), composites them together, uploads the result 
+    to Supabase storage, and updates the scene's image_url in the database.
+    
+    The overlay can be positioned and resized to fit the background. By default, it's 
+    centered and resized to 80% of the background dimensions while maintaining aspect ratio.
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        logger.info(f"Starting image compositing for scene {request.scene_id} by user {request.user_id}")
+        logger.info(f"Background URL: {request.background_url[:80]}...")
+        logger.info(f"Overlay URL: {request.overlay_url[:80]}...")
+        
+        # Composite the images using the service
+        result = image_processing_service.composite_images(
+            background_url=request.background_url,
+            overlay_url=request.overlay_url,
+            scene_id=request.scene_id,
+            user_id=request.user_id,
+            position=(request.position_x, request.position_y),
+            resize_overlay=request.resize_overlay
+        )
+        
+        # Build response
+        if result['success']:
+            logger.info(f"Image compositing completed successfully for scene {request.scene_id}")
+            return ImageCompositeResponse(
+                success=True,
+                image_url=result['image_url'],
+                error=None,
+                message="Images composited successfully"
+            )
+        else:
+            logger.error(f"Image compositing failed for scene {request.scene_id}: {result['error']}")
+            return ImageCompositeResponse(
+                success=False,
+                image_url=None,
+                error=result['error'],
+                message="Image compositing failed"
+            )
+        
+    except Exception as e:
+        logger.error(f"Error in image composite endpoint: {e}", exc_info=True)
+        # Return error response instead of raising exception for better client handling
+        return ImageCompositeResponse(
+            success=False,
+            image_url=None,
+            error=str(e),
+            message="Image compositing failed with exception"
+        )
+
+
 # Scenario Generation Endpoints
 @router.post("/scenario/generate", response_model=ScenarioGenerationResponse)
 def generate_scenario(
@@ -1297,190 +1371,260 @@ def generate_audio(
 
 
 # ============================================================================
-# Image Processing Endpoints
+# Remotion Bridge Endpoints (Pass-through to Node.js)
 # ============================================================================
 
-@router.post("/image/remove-background", response_model=RemoveBackgroundResponse)
-def remove_background(
-    request: RemoveBackgroundRequest,
+@router.post("/remotion/generate-scene1")
+async def generate_scene1_bridge(
+    request: GenerateScene1Request,
     http_request: Request = None,
     api_key: Optional[str] = Depends(get_api_key)
-) -> RemoveBackgroundResponse:
+):
     """
-    Remove background from an image using Remove.bg API.
+    Bridge endpoint: Forward scene1 generation request from Next.js to Node.js Remotion server.
     
-    This endpoint processes an image URL and removes its background using the Remove.bg service.
-    The processed image is uploaded to Supabase storage and the URL is returned.
+    This endpoint acts as a simple pass-through:
+    1. Receives request from Next.js (with template and metadata)
+    2. Forwards to Node.js Remotion server
+    3. Returns Node.js response back to Next.js
     
     Authentication: Optional API key via Bearer token
-    Rate Limits: Based on API key configuration
     """
     try:
-        # Security validation - DISABLED FOR DEVELOPMENT
-        # TODO: Re-enable security checks for production by uncommenting the lines below
-        # validate_request_security(http_request, api_key)
+        # Get Node.js server URL from environment
+        remotion_url = os.getenv("REMOTION_SERVER_URL", "http://localhost:5050")
+        endpoint = f"{remotion_url}/videos"
         
-        logger.info(f"Starting background removal for image by user {request.user_id}")
+        # Log incoming request from Next.js
+        logger.info("=" * 80)
+        logger.info("📥 RECEIVED REQUEST FROM NEXT.JS - POST /remotion/generate-scene1")
+        logger.info("=" * 80)
         
-        # Process the image
-        result = image_processing_service.remove_background(
-            image_url=request.image_url,
-            scene_id=request.scene_id
-        )
+        # Convert request to dict for logging
+        request_data = request.model_dump(exclude_none=True)
         
-        if result['success']:
-            logger.info(f"Background removal completed successfully for user {request.user_id}")
-            return RemoveBackgroundResponse(
-                success=True,
-                image_url=result['image_url'],
-                message="Background removed successfully",
-                error=None
+        # Log request details
+        logger.info(f"📋 Request from Next.js:")
+        logger.info(f"   - template: {request_data.get('template', 'N/A')}")
+        logger.info(f"   - imageUrl: {request_data.get('imageUrl', '')[:80]}..." if request_data.get('imageUrl') else "   - imageUrl: None")
+        
+        if 'product' in request_data:
+            product = request_data['product']
+            logger.info(f"   - product:")
+            logger.info(f"     * title: {product.get('title', 'N/A')}")
+            logger.info(f"     * price: {product.get('price', 'N/A')}")
+            logger.info(f"     * rating: {product.get('rating', 'N/A')}")
+            logger.info(f"     * reviewCount: {product.get('reviewCount', 'N/A')}")
+        
+        if 'metadata' in request_data:
+            metadata = request_data['metadata']
+            logger.info(f"   - metadata:")
+            logger.info(f"     * short_id: {metadata.get('short_id', 'N/A')}")
+            logger.info(f"     * scene_id: {metadata.get('scene_id', 'N/A')}")
+            logger.info(f"     * sceneNumber: {metadata.get('sceneNumber', 'N/A')}")
+        
+        # Log forwarding to Node.js
+        logger.info("-" * 80)
+        logger.info(f"🚀 FORWARDING TO NODE.JS SERVER")
+        logger.info(f"   - Target URL: {endpoint}")
+        logger.info(f"   - Method: POST")
+        logger.info(f"   - Timeout: 60 seconds")
+        logger.info(f"   - Payload being sent:")
+        logger.info(json.dumps(request_data, indent=2))
+        
+        # Forward request to Node.js server
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                endpoint,
+                json=request_data
             )
-        else:
-            logger.error(f"Background removal failed for user {request.user_id}: {result['error']}")
-            return RemoveBackgroundResponse(
+            response.raise_for_status()
+            
+            # Get response data from Node.js
+            node_response = response.json()
+            
+            # Log response from Node.js
+            logger.info("-" * 80)
+            logger.info("✅ RECEIVED RESPONSE FROM NODE.JS")
+            logger.info(f"   - Status Code: {response.status_code}")
+            logger.info(f"   - Response Body:")
+            logger.info(f"     * success: {node_response.get('success')}")
+            logger.info(f"     * taskId: {node_response.get('taskId')}")
+            logger.info(f"     * status: {node_response.get('status')}")
+            logger.info(f"     * message: {node_response.get('message')}")
+            if node_response.get('videoUrl'):
+                logger.info(f"     * videoUrl: {node_response.get('videoUrl')}")
+            if node_response.get('error'):
+                logger.info(f"     * error: {node_response.get('error')}")
+            
+            # Log returning to Next.js
+            logger.info("-" * 80)
+            logger.info("📤 RETURNING RESPONSE TO NEXT.JS")
+            logger.info(f"   - Forwarding Node.js response back to Next.js")
+            logger.info(f"   - Full response being sent back:")
+            logger.info(json.dumps(node_response, indent=2))
+            logger.info("=" * 80)
+            
+            # Return Node.js response to Next.js
+            return GenerateScene1Response(**node_response)
+        
+    except httpx.HTTPStatusError as e:
+        logger.error("=" * 80)
+        logger.error("❌ NODE.JS SERVER ERROR")
+        logger.error(f"   - Status Code: {e.response.status_code}")
+        logger.error(f"   - Response Text: {e.response.text}")
+        logger.error("=" * 80)
+        try:
+            error_data = e.response.json()
+            return GenerateScene1Response(
                 success=False,
-                image_url=None,
-                message="Background removal failed",
-                error=result['error']
+                error=error_data.get('error', str(e))
             )
-        
+        except:
+            return GenerateScene1Response(
+                success=False,
+                error=f"Node.js server error: {e.response.status_code}"
+            )
+    except httpx.RequestError as e:
+        logger.error("=" * 80)
+        logger.error("❌ CONNECTION ERROR TO NODE.JS")
+        logger.error(f"   - Error: {str(e)}")
+        logger.error(f"   - Target: {os.getenv('REMOTION_SERVER_URL', 'http://localhost:5050')}/videos")
+        logger.error(f"   - Make sure Node.js server is running on port 5050")
+        logger.error("=" * 80)
+        return JSONResponse(
+            content={"error": f"Failed to connect to Remotion server: {str(e)}"},
+            status_code=503
+        )
     except Exception as e:
-        logger.error(f"Error in remove background endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Background removal failed: {str(e)}")
+        logger.error("=" * 80)
+        logger.error("❌ UNEXPECTED ERROR IN BRIDGE")
+        logger.error(f"   - Error: {str(e)}")
+        logger.error(f"   - Type: {type(e).__name__}")
+        logger.error("=" * 80)
+        logger.error(f"Full traceback:", exc_info=True)
+        return JSONResponse(
+            content={"error": f"Bridge error: {str(e)}"},
+            status_code=500
+        )
 
 
-@router.post("/image/composite", response_model=CompositeImagesResponse)
-def composite_images(
-    request: CompositeImagesRequest,
+@router.get("/remotion/tasks/{task_id}")
+async def check_scene1_status_bridge(
+    task_id: str,
     http_request: Request = None,
     api_key: Optional[str] = Depends(get_api_key)
-) -> CompositeImagesResponse:
+):
     """
-    Composite two images together (overlay on top of background).
+    Bridge endpoint: Forward scene1 status check from Next.js to Node.js Remotion server.
     
-    This endpoint merges a background image with an overlay/foreground image.
-    Supports both foreground_url and overlay_url parameters (they are aliases).
-    The composited image is uploaded to Supabase storage.
-    
-    If scene_id and user_id are provided, the scene's image_url will be updated in the database.
+    This endpoint acts as a simple pass-through:
+    1. Receives status check from Next.js
+    2. Forwards to Node.js Remotion server
+    3. Returns Node.js response back to Next.js
     
     Authentication: Optional API key via Bearer token
-    Rate Limits: Based on API key configuration
     """
     try:
-        # Security validation - DISABLED FOR DEVELOPMENT
-        # TODO: Re-enable security checks for production by uncommenting the lines below
-        # validate_request_security(http_request, api_key)
+        # Get Node.js server URL from environment
+        remotion_url = os.getenv("REMOTION_SERVER_URL", "http://localhost:5050")
+        endpoint = f"{remotion_url}/tasks/{task_id}"
         
-        # Handle both foreground_url and overlay_url (they're aliases)
-        overlay_url = request.foreground_url or request.overlay_url
-        if not overlay_url:
-            raise HTTPException(
-                status_code=400, 
-                detail="Either foreground_url or overlay_url must be provided"
+        # Log incoming request from Next.js
+        logger.info("=" * 80)
+        logger.info("📥 RECEIVED STATUS CHECK FROM NEXT.JS - GET /remotion/tasks/{task_id}")
+        logger.info("=" * 80)
+        logger.info(f"📋 Path Parameters:")
+        logger.info(f"   - task_id: {task_id}")
+        
+        # Log forwarding to Node.js
+        logger.info("-" * 80)
+        logger.info(f"🚀 FORWARDING TO NODE.JS SERVER")
+        logger.info(f"   - Target URL: {endpoint}")
+        logger.info(f"   - Method: GET")
+        logger.info(f"   - Timeout: 60 seconds")
+        
+        # Forward request to Node.js server
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(endpoint)
+            response.raise_for_status()
+            
+            # Get response data from Node.js
+            node_response = response.json()
+            
+            # Log response from Node.js
+            logger.info("-" * 80)
+            logger.info("✅ RECEIVED RESPONSE FROM NODE.JS")
+            logger.info(f"   - Status Code: {response.status_code}")
+            logger.info(f"   - Response Body:")
+            logger.info(f"     * success: {node_response.get('success')}")
+            logger.info(f"     * status: {node_response.get('status')}")
+            logger.info(f"     * progress: {node_response.get('progress', 'N/A')}")
+            logger.info(f"     * stage: {node_response.get('stage', 'N/A')}")
+            if node_response.get('videoUrl'):
+                logger.info(f"     * videoUrl: {node_response.get('videoUrl')}")
+            if node_response.get('error'):
+                logger.info(f"     * error: {node_response.get('error')}")
+            if node_response.get('message'):
+                logger.info(f"     * message: {node_response.get('message')}")
+            
+            # Log returning to Next.js
+            logger.info("-" * 80)
+            logger.info("📤 RETURNING RESPONSE TO NEXT.JS")
+            logger.info(f"   - Forwarding Node.js response back to Next.js")
+            logger.info(f"   - Full response being sent back:")
+            logger.info(json.dumps(node_response, indent=2))
+            logger.info("=" * 80)
+            
+            # Return Node.js response to Next.js EXACTLY as-is (no Pydantic transformation)
+            return JSONResponse(content=node_response)
+        
+    except httpx.HTTPStatusError as e:
+        logger.error("=" * 80)
+        logger.error("❌ NODE.JS SERVER ERROR (STATUS CHECK)")
+        logger.error(f"   - Status Code: {e.response.status_code}")
+        logger.error(f"   - Response Text: {e.response.text}")
+        logger.error(f"   - Task ID: {task_id}")
+        logger.error("=" * 80)
+        try:
+            error_data = e.response.json()
+            return JSONResponse(content=error_data, status_code=e.response.status_code)
+        except:
+            return JSONResponse(
+                content={"error": f"Node.js server error: {e.response.status_code}"},
+                status_code=e.response.status_code
             )
-        
-        # Use defaults for optional parameters
-        scene_id = request.scene_id or "temp"
-        user_id = request.user_id or "anonymous"
-        
-        logger.info(f"Starting image compositing: background={request.background_url[:50]}..., overlay={overlay_url[:50]}...")
-        
-        # Composite the images
-        result = image_processing_service.composite_images(
-            background_url=request.background_url,
-            overlay_url=overlay_url,
-            scene_id=scene_id,
-            user_id=user_id
+    except httpx.RequestError as e:
+        logger.error("=" * 80)
+        logger.error("❌ CONNECTION ERROR TO NODE.JS (STATUS CHECK)")
+        logger.error(f"   - Error: {str(e)}")
+        logger.error(f"   - Target: {os.getenv('REMOTION_SERVER_URL', 'http://localhost:5050')}/tasks/{task_id}")
+        logger.error(f"   - Make sure Node.js server is running on port 5050")
+        logger.error("=" * 80)
+        return JSONResponse(
+            content={"error": f"Failed to connect to Remotion server: {str(e)}"},
+            status_code=503
         )
-        
-        if result['success']:
-            logger.info(f"Image compositing completed successfully")
-            return CompositeImagesResponse(
-                success=True,
-                image_url=result['image_url'],
-                message="Images composited successfully",
-                error=None
-            )
-        else:
-            logger.error(f"Image compositing failed: {result['error']}")
-            return CompositeImagesResponse(
-                success=False,
-                image_url=None,
-                message="Image compositing failed",
-                error=result['error']
-            )
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in composite images endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Image compositing failed: {str(e)}")
-
-
-@router.post("/image/replace-background", response_model=ReplaceBackgroundResponse)
-def replace_background(
-    request: ReplaceBackgroundRequest,
-    http_request: Request = None,
-    api_key: Optional[str] = Depends(get_api_key)
-) -> ReplaceBackgroundResponse:
-    """
-    Complete workflow: Remove background from product image and composite with new background.
-    
-    This endpoint performs the complete background replacement workflow:
-    1. Removes background from the product image using Remove.bg API
-    2. Downloads the new background image
-    3. Composites the background-removed product onto the new background
-    4. Uploads the final image to Supabase storage
-    5. Updates the scene's image_url in the database
-    
-    Authentication: Optional API key via Bearer token
-    Rate Limits: Based on API key configuration
-    """
-    try:
-        # Security validation - DISABLED FOR DEVELOPMENT
-        # TODO: Re-enable security checks for production by uncommenting the lines below
-        # validate_request_security(http_request, api_key)
-        
-        logger.info(f"Starting background replacement for scene {request.scene_id} by user {request.user_id}")
-        
-        # Perform the complete background replacement workflow
-        result = image_processing_service.replace_background(
-            product_image_url=request.product_image_url,
-            background_image_url=request.background_image_url,
-            scene_id=request.scene_id,
-            user_id=request.user_id
+        logger.error("=" * 80)
+        logger.error("❌ UNEXPECTED ERROR IN BRIDGE (STATUS CHECK)")
+        logger.error(f"   - Error: {str(e)}")
+        logger.error(f"   - Type: {type(e).__name__}")
+        logger.error(f"   - Task ID: {task_id}")
+        logger.error("=" * 80)
+        logger.error(f"Full traceback:", exc_info=True)
+        return JSONResponse(
+            content={"error": f"Bridge error: {str(e)}"},
+            status_code=500
         )
-        
-        if result['success']:
-            logger.info(f"Background replacement completed successfully for scene {request.scene_id}")
-            return ReplaceBackgroundResponse(
-                success=True,
-                image_url=result['image_url'],
-                message="Background replaced successfully",
-                error=None
-            )
-        else:
-            logger.error(f"Background replacement failed for scene {request.scene_id}: {result['error']}")
-            return ReplaceBackgroundResponse(
-                success=False,
-                image_url=None,
-                message="Background replacement failed",
-                error=result['error']
-            )
-        
-    except Exception as e:
-        logger.error(f"Error in replace background endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Background replacement failed: {str(e)}")
 
 
-@router.post("/image/merge-with-video", response_model=MergeImageWithVideoResponse)
+@router.post("/image/merge-with-video")
 def merge_image_with_video(
     request: MergeImageWithVideoRequest,
     http_request: Request = None,
     api_key: Optional[str] = Depends(get_api_key)
-) -> MergeImageWithVideoResponse:
+):
     """
     Start async image-video merge task (Scene2 generation).
     Returns immediately with a task_id for polling.
@@ -1523,6 +1667,44 @@ def merge_image_with_video(
         logger.info(f"   - Duration: {request.duration}")
         logger.info(f"   - Animation: {request.add_animation}")
         
+        # Validate required fields
+        if not request.product_image_url:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "product_image_url is required"
+                }
+            )
+        
+        if not request.background_video_url:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "background_video_url is required"
+                }
+            )
+        
+        # Validate URL formats
+        if not request.product_image_url.startswith(('http://', 'https://')):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "Invalid image URL format"
+                }
+            )
+        
+        if not request.background_video_url.startswith(('http://', 'https://')):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "success": False,
+                    "error": "Invalid video URL format"
+                }
+            )
+        
         # Get short_id from request (try multiple field names for compatibility)
         short_id = request.short_id or request.shortId or request.scene_id
         
@@ -1543,28 +1725,34 @@ def merge_image_with_video(
         print("🔔 "*40)
         print()
         
-        return MergeImageWithVideoResponse(
-            success=True,
-            task_id=result['task_id'],
-            status=result['status'],
-            video_url=None,  # Will be available after completion
-            message=result['message'],
-            error=None,
-            created_at=result['created_at']
+        return JSONResponse(
+            status_code=200,
+            content={
+                "success": True,
+                "task_id": result['task_id'],
+                "status": "pending",
+                "message": "Video merge task started successfully"
+            }
         )
         
     except Exception as e:
         logger.error(f"Error starting image-video merge task: {e}", exc_info=True)
         print("🔔 "*40)
         print()
-        raise HTTPException(status_code=500, detail=f"Failed to start image-video merge: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": "Failed to start video merge task"
+            }
+        )
 
 
-@router.get("/image/merge-with-video/tasks/{task_id}", response_model=MergeImageWithVideoResponse)
+@router.get("/image/merge-with-video/tasks/{task_id}")
 def get_image_merge_task_status(
     task_id: str,
     api_key: Optional[str] = Depends(get_api_key)
-) -> MergeImageWithVideoResponse:
+):
     """
     Poll the status of an image-video merge task (Scene2 generation).
     
@@ -1580,44 +1768,84 @@ def get_image_merge_task_status(
         task_info = image_processing_service.get_task_status(task_id)
         
         if not task_info:
-            raise HTTPException(status_code=404, detail="Image merge task not found")
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "success": False,
+                    "error": "Task not found"
+                }
+            )
+        
+        # Map internal status to expected format
+        status_map = {
+            'pending': 'pending',
+            'running': 'processing',
+            'processing': 'processing',
+            'completed': 'completed',
+            'failed': 'failed',
+            TaskStatus.PENDING: 'pending',
+            TaskStatus.RUNNING: 'processing',
+            TaskStatus.COMPLETED: 'completed',
+            TaskStatus.FAILED: 'failed'
+        }
+        
+        status = status_map.get(task_info.get('status'), 'pending')
         
         # Check if completed and has video URL
-        if task_info['status'] == 'completed' and task_info.get('video_url'):
-            return MergeImageWithVideoResponse(
-                success=True,
-                task_id=task_id,
-                status=task_info['status'],
-                video_url=task_info['video_url'],
-                message=task_info.get('message', 'Image-video merge completed successfully'),
-                error=None,
-                created_at=task_info.get('created_at')
+        if status == 'completed' and task_info.get('video_url'):
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "task_id": task_id,
+                    "status": status,
+                    "video_url": task_info['video_url'],
+                    "message": "Video merge completed successfully",
+                    "progress": 100
+                }
             )
-        elif task_info['status'] == 'failed':
-            return MergeImageWithVideoResponse(
-                success=False,
-                task_id=task_id,
-                status=task_info['status'],
-                video_url=None,
-                message=task_info.get('message', 'Image-video merge failed'),
-                error=task_info.get('error_message'),
-                created_at=task_info.get('created_at')
+        elif status == 'failed':
+            return JSONResponse(
+                content={
+                    "success": False,
+                    "task_id": task_id,
+                    "status": status,
+                    "error": task_info.get('error_message', 'Failed to merge video: Unknown error'),
+                    "message": "Video merge failed"
+                }
+            )
+        elif status == 'processing':
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "task_id": task_id,
+                    "status": status,
+                    "video_url": None,
+                    "message": "Merging product image with background video",
+                    "progress": 50
+                }
             )
         else:
-            # Still pending or processing
-            return MergeImageWithVideoResponse(
-                success=True,
-                task_id=task_id,
-                status=task_info['status'],
-                video_url=None,
-                message=task_info.get('message', f"Task is {task_info['status']}"),
-                error=None,
-                created_at=task_info.get('created_at')
+            # pending
+            return JSONResponse(
+                content={
+                    "success": True,
+                    "task_id": task_id,
+                    "status": status,
+                    "video_url": None,
+                    "message": "Video merge task is queued",
+                    "progress": 0
+                }
             )
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error getting image merge task status {task_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "success": False,
+                "error": f"Failed to get task status: {str(e)}"
+            }
+        )
 

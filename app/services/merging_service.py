@@ -175,7 +175,7 @@ class MergingService:
             # Step 3: Merge videos
             logger.info(f"[STEP 3] Merging videos...")
             logger.info(f"[STEP 3] Merging {len(video_files)} video files into single video...")
-            merged_video_path = self._merge_videos(video_files, scenes_data, task_id)
+            merged_video_path = self._merge_videos(video_files, task_id)
             if not merged_video_path:
                 raise Exception("Failed to merge videos")
             merged_size = os.path.getsize(merged_video_path) if os.path.exists(merged_video_path) else 0
@@ -345,12 +345,12 @@ class MergingService:
                 logger.info(f"[MERGE FLOW] Thread reference cleaned up for task_id: {task_id}")
 
     def _fetch_video_scenes(self, short_id: str) -> List[Dict[str, Any]]:
-        """Fetch all video scenes for a short."""
+        """Fetch all video scenes for a short directly from video_scenes table."""
         try:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
 
-            # Query video_scenes directly by short_id (no join needed - short_id is in video_scenes table)
+            # Get all scenes with generated videos directly using short_id
             scenes_result = supabase_manager.client.table('video_scenes').select(
                 'id, scene_number, generated_video_url, duration'
             ).eq('short_id', short_id).eq('status', 'completed').not_.is_('generated_video_url', 'null').execute()
@@ -362,8 +362,6 @@ class MergingService:
             # Sort by scene number
             scenes = sorted(scenes_result.data,
                             key=lambda x: x['scene_number'])
-
-            logger.info(f"✅ Found {len(scenes)} completed video scenes for short {short_id}")
 
             return scenes
 
@@ -1010,179 +1008,188 @@ class MergingService:
                         f"Failed to download video for scene {scene.get('id')} after {MAX_RETRIES} attempts"
                     )
 
-                video_files.append(temp_path)
+                # Verify downloaded video duration
+                downloaded_duration = self._get_video_duration(temp_path)
+                expected_duration = scene.get('duration', 8)
                 logger.info(
-                    f"Downloaded video for scene {scene['id']} to {temp_path}")
+                    f"✅ Downloaded scene {scene.get('scene_number')}: "
+                    f"{downloaded_duration:.2f}s (expected: {expected_duration}s)"
+                )
+                
+                # Warn if duration mismatch
+                if abs(downloaded_duration - expected_duration) > 1.0:
+                    logger.warning(
+                        f"⚠️  Scene {scene.get('scene_number')} duration mismatch: "
+                        f"got {downloaded_duration:.2f}s, expected {expected_duration}s"
+                    )
+
+                video_files.append(temp_path)
 
             if not video_files:
                 raise Exception("No videos were downloaded successfully")
 
-            logger.info(f"Successfully downloaded {len(video_files)} videos")
+            logger.info(f"✅ Successfully downloaded {len(video_files)} videos")
             return video_files
 
         except Exception as e:
             logger.error(f"Failed to download videos: {e}")
             raise
 
-    def _merge_videos(self, video_files: List[str], scenes_data: List[Dict[str, Any]], task_id: str) -> str:
-        """
-        Merge videos using FFmpeg, trimming each to its specified duration.
-        
-        Args:
-            video_files: List of video file paths
-            scenes_data: List of scene metadata including durations
-            task_id: Task ID for logging
-            
-        Returns:
-            Path to merged video file
-        """
+    def _merge_videos(self, video_files: List[str], task_id: str) -> str:
+        """Merge videos using FFmpeg concat filter to ensure proper scene timing."""
         try:
             if len(video_files) == 1:
-                # Even for single video, trim it to specified duration
-                if len(scenes_data) == 1 and scenes_data[0].get('duration'):
-                    logger.info(f"Single video: trimming to {scenes_data[0]['duration']}s")
-                    return self._trim_video_to_duration(video_files[0], scenes_data[0]['duration'], task_id)
                 return video_files[0]
 
-            # Create temporary directory for trimmed videos and merged video
-            temp_dir = tempfile.mkdtemp()
+            # Log each video's duration and audio status before merging
+            logger.info(f"📊 Analyzing {len(video_files)} video scenes before merge:")
+            total_expected_duration = 0.0
+            has_audio_streams = []
             
-            # Step 1: Trim each video to its specified duration
-            trimmed_files = []
-            total_expected_duration = 0
-            
-            logger.info(f"Trimming {len(video_files)} videos to their specified durations...")
-            for i, (video_file, scene_data) in enumerate(zip(video_files, scenes_data)):
-                scene_duration = scene_data.get('duration')
-                if not scene_duration:
-                    logger.warning(f"Scene {i+1} has no duration specified, using original video")
-                    trimmed_files.append(video_file)
-                    continue
-                
-                # Get actual video duration for logging
-                actual_duration = self._get_video_duration(video_file)
-                logger.info(f"Scene {i+1}: Trimming from {actual_duration}s to {scene_duration}s")
-                
-                # Trim video to specified duration
-                trimmed_path = os.path.join(temp_dir, f"trimmed_{i}.mp4")
-                self._trim_video(video_file, trimmed_path, scene_duration)
-                trimmed_files.append(trimmed_path)
-                total_expected_duration += scene_duration
-            
-            logger.info(f"Total expected duration after trimming: {total_expected_duration}s")
+            for i, video_file in enumerate(video_files, 1):
+                duration = self._get_video_duration(video_file)
+                has_audio = self._check_video_has_audio(video_file)
+                has_audio_streams.append(has_audio)
+                total_expected_duration += duration
+                audio_status = "✅ with audio" if has_audio else "⚠️  no audio"
+                logger.info(f"   Scene {i}: {duration:.2f}s {audio_status} - {os.path.basename(video_file)}")
+            logger.info(f"   Total expected duration: {total_expected_duration:.2f}s")
 
-            # Step 2: Merge trimmed videos
+            # Create temporary directory for merged video
+            temp_dir = tempfile.mkdtemp()
             merged_video_path = os.path.join(temp_dir, "merged.mp4")
 
-            # Create file list for FFmpeg concat
-            file_list_path = os.path.join(temp_dir, "file_list.txt")
-            with open(file_list_path, 'w') as f:
-                for trimmed_file in trimmed_files:
-                    f.write(f"file '{trimmed_file}'\n")
+            # Check if all videos have audio
+            all_have_audio = all(has_audio_streams)
+            none_have_audio = not any(has_audio_streams)
+            
+            if none_have_audio:
+                # No videos have audio - use simple concat demuxer
+                logger.info("🎬 All videos are silent - using simple concat demuxer")
+                file_list_path = os.path.join(temp_dir, "file_list.txt")
+                with open(file_list_path, 'w') as f:
+                    for video_file in video_files:
+                        f.write(f"file '{video_file}'\n")
+                
+                cmd = [
+                    'ffmpeg', '-y',
+                    '-f', 'concat',
+                    '-safe', '0',
+                    '-i', file_list_path,
+                    '-c', 'copy',
+                    merged_video_path
+                ]
+            elif not all_have_audio:
+                # Mixed: some have audio, some don't - need to add silent audio to silent videos first
+                logger.info("🎬 Mixed audio streams detected - normalizing videos first")
+                normalized_videos = []
+                for i, (video_file, has_audio) in enumerate(zip(video_files, has_audio_streams), 1):
+                    if not has_audio:
+                        logger.info(f"   Adding silent audio to scene {i}...")
+                        normalized_path = os.path.join(temp_dir, f"normalized_{i}.mp4")
+                        norm_cmd = [
+                            'ffmpeg', '-y',
+                            '-i', video_file,
+                            '-f', 'lavfi',
+                            '-i', 'anullsrc=r=48000:cl=stereo',
+                            '-shortest',
+                            '-c:v', 'copy',
+                            '-c:a', 'aac',
+                            normalized_path
+                        ]
+                        norm_result = subprocess.run(norm_cmd, capture_output=True, text=True, timeout=120)
+                        if norm_result.returncode != 0:
+                            logger.error(f"Failed to add silent audio: {norm_result.stderr}")
+                            raise Exception(f"Failed to normalize video {i}")
+                        normalized_videos.append(normalized_path)
+                        logger.info(f"   ✅ Scene {i} normalized")
+                    else:
+                        normalized_videos.append(video_file)
+                
+                # Now use concat FILTER (not demuxer) to properly handle mixed sources
+                logger.info("🎬 Using concat filter for mixed sources (ensures proper timing)")
+                filter_parts = []
+                for i in range(len(normalized_videos)):
+                    filter_parts.append(f"[{i}:v][{i}:a]")
+                
+                filter_complex = f"{''.join(filter_parts)}concat=n={len(normalized_videos)}:v=1:a=1[outv][outa]"
+                
+                cmd = ['ffmpeg', '-y']
+                
+                # Add all normalized input files
+                for video_file in normalized_videos:
+                    cmd.extend(['-i', video_file])
+                
+                # Add filter complex and output mapping
+                cmd.extend([
+                    '-filter_complex', filter_complex,
+                    '-map', '[outv]',
+                    '-map', '[outa]',
+                    '-c:v', 'libx264',      # Re-encode video for consistency
+                    '-preset', 'medium',     # Balanced encoding speed
+                    '-crf', '23',            # Good quality
+                    '-c:a', 'aac',           # Re-encode audio for consistency
+                    '-b:a', '192k',          # Good audio quality
+                    merged_video_path
+                ])
+            else:
+                # All videos have audio - use concat filter for best quality
+                logger.info("🎬 All videos have audio - using concat filter")
+                filter_parts = []
+                for i in range(len(video_files)):
+                    filter_parts.append(f"[{i}:v][{i}:a]")
+                
+                filter_complex = f"{''.join(filter_parts)}concat=n={len(video_files)}:v=1:a=1[outv][outa]"
+                
+                cmd = ['ffmpeg', '-y']
+                
+                # Add all input files
+                for video_file in video_files:
+                    cmd.extend(['-i', video_file])
+                
+                # Add filter complex and output mapping
+                cmd.extend([
+                    '-filter_complex', filter_complex,
+                    '-map', '[outv]',
+                    '-map', '[outa]',
+                    '-c:v', 'libx264',      # Re-encode video for consistency
+                    '-preset', 'medium',     # Balanced encoding speed
+                    '-crf', '23',            # Good quality
+                    '-c:a', 'aac',           # Re-encode audio for consistency
+                    '-b:a', '192k',          # Good audio quality
+                    merged_video_path
+                ])
 
-            # Merge videos using FFmpeg concat demuxer with re-encoding for compatibility
-            # Using re-encoding ensures proper timing and frame alignment
-            cmd = [
-                'ffmpeg', '-y',
-                '-f', 'concat',
-                '-safe', '0',
-                '-i', file_list_path,
-                '-c:v', 'libx264',        # Re-encode video for proper timing
-                '-preset', 'medium',       # Balanced speed/quality
-                '-crf', '23',              # Good quality
-                '-c:a', 'aac',             # Re-encode audio
-                '-b:a', '128k',            # Audio bitrate
-                '-movflags', '+faststart', # Enable streaming
-                merged_video_path
-            ]
-
+            logger.info("🎬 Executing FFmpeg merge command...")
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minutes timeout
+                timeout=600  # 10 minutes timeout for re-encoding
             )
 
             if result.returncode != 0:
-                raise Exception(f"FFmpeg merge failed: {result.stderr}")
+                logger.error(f"FFmpeg concat filter failed, stderr: {result.stderr}")
+                raise Exception(f"FFmpeg failed: {result.stderr}")
 
             if not os.path.exists(merged_video_path):
                 raise Exception("Merged video file was not created")
+
+            # Verify merged video duration
+            merged_duration = self._get_video_duration(merged_video_path)
+            logger.info(f"✅ Successfully merged {len(video_files)} videos")
+            logger.info(f"   Expected duration: {total_expected_duration:.2f}s")
+            logger.info(f"   Actual duration: {merged_duration:.2f}s")
             
-            # Verify final duration
-            final_duration = self._get_video_duration(merged_video_path)
-            logger.info(
-                f"Successfully merged {len(video_files)} videos. "
-                f"Expected: {total_expected_duration}s, Actual: {final_duration}s"
-            )
+            if abs(merged_duration - total_expected_duration) > 0.5:
+                logger.warning(f"   ⚠️  Duration mismatch: {merged_duration - total_expected_duration:.2f}s difference")
+            else:
+                logger.info(f"   ✅ Duration verified: All scenes included properly")
             
             return merged_video_path
 
         except Exception as e:
             logger.error(f"Failed to merge videos: {e}")
-            raise
-    
-    def _trim_video(self, input_path: str, output_path: str, duration: float):
-        """
-        Trim video to specified duration.
-        
-        Args:
-            input_path: Input video file path
-            output_path: Output video file path
-            duration: Duration in seconds
-        """
-        try:
-            cmd = [
-                'ffmpeg', '-y',
-                '-i', input_path,
-                '-t', str(duration),       # Trim to specified duration
-                '-c:v', 'libx264',         # Re-encode for precise timing
-                '-preset', 'medium',
-                '-crf', '23',
-                '-c:a', 'aac',
-                '-b:a', '128k',
-                output_path
-            ]
-            
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=120  # 2 minutes timeout
-            )
-            
-            if result.returncode != 0:
-                raise Exception(f"FFmpeg trim failed: {result.stderr}")
-            
-            if not os.path.exists(output_path):
-                raise Exception("Trimmed video file was not created")
-            
-            actual_duration = self._get_video_duration(output_path)
-            logger.info(f"Trimmed video to {actual_duration}s (target: {duration}s)")
-            
-        except Exception as e:
-            logger.error(f"Failed to trim video: {e}")
-            raise
-    
-    def _trim_video_to_duration(self, video_path: str, duration: float, task_id: str) -> str:
-        """
-        Trim a single video to specified duration and return new path.
-        
-        Args:
-            video_path: Input video file path
-            duration: Duration in seconds
-            task_id: Task ID for logging
-            
-        Returns:
-            Path to trimmed video
-        """
-        try:
-            temp_dir = tempfile.mkdtemp()
-            trimmed_path = os.path.join(temp_dir, "trimmed.mp4")
-            self._trim_video(video_path, trimmed_path, duration)
-            return trimmed_path
-        except Exception as e:
-            logger.error(f"Failed to trim single video: {e}")
             raise
 
     def _add_watermark_if_needed(self, video_path: str, user_id: str, task_id: str) -> str:
@@ -1322,8 +1329,8 @@ class MergingService:
             logger.warning(f"Failed to check for audio stream: {e}, assuming no audio")
             return False
 
-    def _get_video_duration(self, video_path: str) -> int:
-        """Get video duration in seconds using FFmpeg."""
+    def _get_video_duration(self, video_path: str) -> float:
+        """Get video duration in seconds using FFmpeg (returns float for precise timing)."""
         try:
             cmd = [
                 'ffprobe',
@@ -1342,16 +1349,16 @@ class MergingService:
 
             if result.returncode == 0:
                 duration = float(result.stdout.strip())
-                return int(duration)
+                return duration
             else:
                 logger.warning(
                     f"Could not get video duration, defaulting to 30 seconds: {result.stderr}")
-                return 30
+                return 30.0
 
         except Exception as e:
             logger.warning(
                 f"Failed to get video duration: {e}, defaulting to 30 seconds")
-            return 30
+            return 30.0
 
 
     def _merge_audio_with_video(self, video_path: str, audio_path: str, task_id: str, music_files: List[str] = None) -> str:
@@ -1381,14 +1388,31 @@ class MergingService:
 
             # Get video duration for proper audio mixing
             video_duration = self._get_video_duration(video_path)
+            audio_duration = self._get_video_duration(audio_path) if audio_path else 0
+            
+            logger.info(f"📏 Duration Analysis:")
+            logger.info(f"   - Video duration: {video_duration:.2f}s (ALL scenes merged)")
+            logger.info(f"   - Audio duration: {audio_duration:.2f}s")
+            
+            if audio_duration > video_duration:
+                trim_amount = audio_duration - video_duration
+                logger.warning(f"   ⚠️  Audio is {trim_amount:.2f}s LONGER than video - will be trimmed to {video_duration:.2f}s")
+                logger.warning(f"   ✂️  Audio will be CUT at {video_duration:.2f}s to match video length")
+            elif audio_duration < video_duration:
+                silence_amount = video_duration - audio_duration
+                logger.info(f"   ✅ Audio is {silence_amount:.2f}s shorter than video - will have silence at end")
+            else:
+                logger.info(f"   ✅ Audio and video durations match perfectly")
 
             # Build FFmpeg command based on available inputs
+            # IMPORTANT: Using duration=shortest to ensure final video matches original video length
+            # Audio will be trimmed if longer than video - we NEVER cut video scenes
             if music_files and len(music_files) > 0:
                 logger.info(f"Merging with background music: {len(music_files)} track(s)")
                 
                 # Merge audio with video including background music
                 if len(music_files) == 1:
-                    # Single music track (24s video)
+                    # Single music track
                     cmd = [
                         'ffmpeg', '-y',
                         '-i', video_path,      # Input 0: video with sound effects
@@ -1399,15 +1423,14 @@ class MergingService:
                         '[0:a]volume=0.2[vid_audio];'
                         '[1:a]volume=1.0[voice_audio];'
                         '[2:a]volume=0.4[bg_music];'
-                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=first:dropout_transition=2[out]',
+                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
                         '-map', '0:v',         # Map video from first input
                         '-map', '[out]',       # Map the mixed audio output
                         '-c:a', 'aac',         # Convert mixed audio to AAC
-                        '-shortest',           # Ensure output duration matches shortest stream (video)
                         merged_path
                     ]
                 else:
-                    # Two music tracks (48s video) - concatenate them first
+                    # Two music tracks - concatenate them first
                     cmd = [
                         'ffmpeg', '-y',
                         '-i', video_path,      # Input 0: video with sound effects
@@ -1420,11 +1443,10 @@ class MergingService:
                         '[0:a]volume=0.2[vid_audio];'
                         '[1:a]volume=1.0[voice_audio];'
                         '[bgmusic]volume=0.4[bg_audio];'
-                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=first:dropout_transition=2[out]',
+                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
                         '-map', '0:v',         # Map video from first input
                         '-map', '[out]',       # Map the mixed audio output
                         '-c:a', 'aac',         # Convert mixed audio to AAC
-                        '-shortest',           # Ensure output duration matches shortest stream (video)
                         merged_path
                     ]
             else:
@@ -1438,11 +1460,10 @@ class MergingService:
                     '-filter_complex', 
                     '[0:a]volume=0.3[vid_audio];'
                     '[1:a]volume=1.0[voice_audio];'
-                    '[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',
+                    '[vid_audio][voice_audio]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
                     '-map', '0:v',         # Map video from first input
                     '-map', '[out]',       # Map the mixed audio output
                     '-c:a', 'aac',         # Convert mixed audio to AAC
-                    '-shortest',           # Ensure output duration matches shortest stream (video)
                     merged_path
                 ]
 
@@ -1501,7 +1522,6 @@ class MergingService:
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:a', 'aac',
-                        '-shortest',
                         merged_path
                     ]
                 else:
@@ -1521,7 +1541,6 @@ class MergingService:
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:a', 'aac',
-                        '-shortest',
                         merged_path
                     ]
             else:
@@ -1535,7 +1554,6 @@ class MergingService:
                     '-map', '0:v',         # Map video from first input
                     '-map', '[out]',       # Map the mixed audio output
                     '-c:a', 'aac',         # Convert mixed audio to AAC
-                    '-shortest',
                     merged_path
                 ]
 
@@ -1590,12 +1608,11 @@ class MergingService:
                         '[0:a]volume=0.15[vid_audio];'
                         '[1:a]volume=1.0[voice];'
                         '[2:a]volume=0.4[music];'
-                        '[vid_audio][voice][music]amix=inputs=3:duration=first:dropout_transition=2[out]',
+                        '[vid_audio][voice][music]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:v', 'copy',
                         '-c:a', 'aac',
-                        '-shortest',
                         merged_path
                     ]
                 else:
@@ -1611,12 +1628,11 @@ class MergingService:
                         '[0:a]volume=0.15[vid_audio];'
                         '[1:a]volume=1.0[voice];'
                         '[bgmusic]volume=0.4[music];'
-                        '[vid_audio][voice][music]amix=inputs=3:duration=first:dropout_transition=2[out]',
+                        '[vid_audio][voice][music]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
                         '-map', '0:v',
                         '-map', '[out]',
                         '-c:v', 'copy',
                         '-c:a', 'aac',
-                        '-shortest',
                         merged_path
                     ]
             else:
@@ -1627,11 +1643,10 @@ class MergingService:
                     '-i', video_path,      # Input 0: video with sound effects
                     '-i', audio_path,      # Input 1: voice script audio
                     '-c:v', 'copy',        # Copy video codec
-                    '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=first:dropout_transition=2[out]',
+                    '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
                     '-map', '0:v',         # Map video from first input
                     '-map', '[out]',       # Map the mixed audio output
                     '-c:a', 'aac',         # Convert mixed audio to AAC
-                    '-shortest',
                     merged_path
                 ]
 
@@ -1667,12 +1682,21 @@ class MergingService:
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_basic.mp4")
 
+            # Get durations for logging
+            video_duration = self._get_video_duration(video_path)
+            audio_duration = self._get_video_duration(audio_path) if audio_path else 0
+            
+            logger.info(f"📏 Duration Analysis (Basic):")
+            logger.info(f"   - Video: {video_duration:.2f}s | Audio: {audio_duration:.2f}s")
+            if audio_duration > video_duration:
+                logger.warning(f"   ⚠️  Audio will be trimmed by {audio_duration - video_duration:.2f}s")
+
             # Build FFmpeg command based on whether we have background music
             if music_files and len(music_files) > 0:
                 logger.info(f"Basic merge with background music: {len(music_files)} track(s)")
                 
                 if len(music_files) == 1:
-                    # Voice + single music track (24s video)
+                    # Voice + single music track
                     cmd = [
                         'ffmpeg', '-y',
                         '-i', video_path,       # Input 0: video (no audio or we ignore it)
@@ -1681,16 +1705,16 @@ class MergingService:
                         '-filter_complex',
                         '[1:a]volume=1.0[voice];'
                         '[2:a]volume=0.4[music];'
-                        '[voice][music]amix=inputs=2:duration=first[out]',
+                        '[voice][music]amix=inputs=2:duration=shortest[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',
+                        '-shortest',            # Stop encoding when shortest input ends (video)
                         merged_path
                     ]
                 else:
-                    # Voice + two music tracks (48s video) - concatenate music first
+                    # Voice + two music tracks - concatenate music first
                     cmd = [
                         'ffmpeg', '-y',
                         '-i', video_path,       # Input 0: video (no audio or we ignore it)
@@ -1701,12 +1725,12 @@ class MergingService:
                         '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
                         '[1:a]volume=1.0[voice];'
                         '[bgmusic]volume=0.4[music];'
-                        '[voice][music]amix=inputs=2:duration=first[out]',
+                        '[voice][music]amix=inputs=2:duration=shortest[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',
+                        '-shortest',            # Stop encoding when shortest input ends (video)
                         merged_path
                     ]
             else:
@@ -1720,7 +1744,7 @@ class MergingService:
                     '-c:a', 'aac',         # Convert audio to AAC
                     '-map', '0:v',         # Map video from first input
                     '-map', '1:a',         # Map audio from second input (voice script)
-                    '-shortest',           # Ensure output duration matches video
+                    '-shortest',           # Stop encoding when shortest input ends (video)
                     merged_path
                 ]
 
@@ -1768,10 +1792,14 @@ class MergingService:
             # Check if video has audio stream
             has_audio = self._check_video_has_audio(video_path)
             
+            # Get video duration for logging
+            video_duration = self._get_video_duration(video_path)
+            logger.info(f"📏 Video duration: {video_duration:.2f}s - Music will be trimmed to match if needed")
+            
             if has_audio:
                 # Video has audio (sound effects) - mix it with background music
                 if len(music_files) == 1:
-                    # Single music track (24s video)
+                    # Single music track
                     logger.info(f"Merging video audio + 1 background music track")
                     cmd = [
                         'ffmpeg', '-y',
@@ -1780,16 +1808,15 @@ class MergingService:
                         '-filter_complex',
                         '[0:a]volume=0.2[vid_audio];'
                         '[1:a]volume=0.4[bg_music];'
-                        '[vid_audio][bg_music]amix=inputs=2:duration=first:dropout_transition=2[out]',
+                        '[vid_audio][bg_music]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',            # Ensure output duration matches video
                         merged_path
                     ]
                 else:
-                    # Two music tracks (48s video) - concatenate music first
+                    # Two music tracks - concatenate music first
                     logger.info(f"Merging video audio + 2 background music tracks")
                     cmd = [
                         'ffmpeg', '-y',
@@ -1800,18 +1827,17 @@ class MergingService:
                         '[1:a][2:a]concat=n=2:v=0:a=1[bgmusic];'
                         '[0:a]volume=0.2[vid_audio];'
                         '[bgmusic]volume=0.4[bg_music];'
-                        '[vid_audio][bg_music]amix=inputs=2:duration=first:dropout_transition=2[out]',
+                        '[vid_audio][bg_music]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
                         '-map', '0:v',          # Map video from first input
                         '-map', '[out]',        # Map mixed audio
                         '-c:v', 'copy',         # Copy video codec
                         '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',            # Ensure output duration matches video
                         merged_path
                     ]
             else:
                 # Video has no audio - just add background music
                 if len(music_files) == 1:
-                    # Single music track (24s video)
+                    # Single music track
                     logger.info(f"Adding 1 background music track to silent video")
                     cmd = [
                         'ffmpeg', '-y',
@@ -1827,7 +1853,7 @@ class MergingService:
                         merged_path
                     ]
                 else:
-                    # Two music tracks (48s video) - concatenate music
+                    # Two music tracks - concatenate music
                     logger.info(f"Adding 2 background music tracks to silent video")
                     cmd = [
                         'ffmpeg', '-y',
