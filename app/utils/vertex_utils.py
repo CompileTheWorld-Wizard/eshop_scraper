@@ -440,6 +440,87 @@ class VertexManager:
         
         return background
 
+    def generate_image_from_text(
+        self,
+        prompt: str,
+        model: str = "imagen-3.0-generate-002",
+        output_path: Optional[str] = None,
+        aspect_ratio: str = "1:1",
+        number_of_images: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Generate an image from text prompt using Vertex AI Imagen.
+        Perfect for shadow generation and other text-to-image tasks.
+        
+        Args:
+            prompt: Text description of the image to generate
+            model: Vertex AI model to use (default: imagen-3.0-generate-002)
+            output_path: Optional path to save the generated image
+            aspect_ratio: Aspect ratio (1:1, 16:9, 9:16, 3:4, 4:3)
+            number_of_images: Number of images to generate (1-4)
+            
+        Returns:
+            Dictionary containing success status, image path, and image bytes
+        """
+        if not self.is_available():
+            raise RuntimeError("Vertex AI is not available or properly configured")
+        
+        try:
+            logger.info(f"Generating image with Vertex AI Imagen")
+            logger.info(f"  → Model: {model}")
+            logger.info(f"  → Aspect Ratio: {aspect_ratio}")
+            logger.info(f"  → Number of images: {number_of_images}")
+            logger.info(f"  → Prompt length: {len(prompt)} characters")
+            
+            # Generate the image
+            result = self.client.models.generate_images(
+                model=model,
+                prompt=prompt,
+                config=GenerateImagesConfig(
+                    number_of_images=number_of_images,
+                    aspect_ratio=aspect_ratio,
+                    safety_filter_level="BLOCK_ONLY_HIGH",
+                    person_generation="ALLOW_ALL"
+                )
+            )
+            
+            if not result.generated_images:
+                raise RuntimeError("No images were generated")
+            
+            generated_image = result.generated_images[0].image
+            logger.info(f"  → Image generated successfully")
+            
+            # Get temp directory and create output path if not provided
+            if not output_path:
+                temp_dir = self._get_temp_dir()
+                output_path = str(temp_dir / f"imagen_generated_{uuid.uuid4()}.png")
+            
+            # Save the image
+            generated_image.save(output_path)
+            logger.info(f"  → Image saved to: {output_path}")
+            
+            # Get image bytes for potential upload
+            image_bytes = BytesIO()
+            generated_image._pil_image.save(image_bytes, format='PNG')
+            image_bytes = image_bytes.getvalue()
+            
+            return {
+                'success': True,
+                'image_path': output_path,
+                'image_bytes': image_bytes,
+                'model_used': model,
+                'aspect_ratio': aspect_ratio
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to generate image with Vertex AI: {e}")
+            return {
+                'success': False,
+                'error': str(e),
+                'image_path': None,
+                'image_bytes': None
+            }
+    
     def generate_image_with_recontext_and_upscale(
         self,
         prompt: str,

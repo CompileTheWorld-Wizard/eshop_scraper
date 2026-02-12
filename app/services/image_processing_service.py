@@ -19,7 +19,7 @@ from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
-from PIL import Image
+from PIL import Image, ImageFilter, ImageEnhance
 import cv2
 import numpy as np
 
@@ -286,97 +286,173 @@ class ImageProcessingService:
         self,
         background_path: str,
         overlay_path: str,
-        position: Tuple[int, int] = (0, 0),
-        resize_overlay: bool = True,
-        force_landscape: bool = True,
-        landscape_width: int = 1920,
-        landscape_height: int = 1080
+        position=(0, 0),
+        resize_overlay=True,
+        landscape_width=1920,
+        landscape_height=1080
     ) -> str:
-        """
-        Composite two images locally using PIL.
+        # -----------------------------
+        # 1️⃣ Load images
+        # -----------------------------
+        background = Image.open(background_path).convert("RGB")
+        overlay = Image.open(overlay_path).convert("RGBA")
 
-        Args:
-            background_path: Path to background image
-            overlay_path: Path to overlay image (should have transparency/alpha channel)
-            position: (x, y) position to place overlay. If (0, 0), will center the overlay
-            resize_overlay: Whether to resize overlay to fit background
-            force_landscape: Whether to force landscape output (default: True)
-            landscape_width: Target width for landscape output (default: 1920)
-            landscape_height: Target height for landscape output (default: 1080)
+        # -----------------------------
+        # 2️⃣ Resize background WITHOUT distortion
+        # -----------------------------
+        bg_ratio = background.width / background.height
+        target_ratio = landscape_width / landscape_height
 
-        Returns:
-            Path to the composited image file
-        """
-        try:
-            # Open both images
-            background = Image.open(background_path)
-            overlay = Image.open(overlay_path)
+        if bg_ratio > target_ratio:
+            # background too wide → crop sides
+            new_height = landscape_height
+            new_width = int(bg_ratio * new_height)
+        else:
+            # background too tall → crop top/bottom
+            new_width = landscape_width
+            new_height = int(new_width / bg_ratio)
 
-            # Force background to landscape if needed
-            if force_landscape:
-                bg_width, bg_height = background.size
-                # Check if background is not already landscape or needs resizing
-                if bg_width < bg_height or bg_width != landscape_width or bg_height != landscape_height:
-                    logger.info(f"Resizing background from {bg_width}x{bg_height} to landscape {landscape_width}x{landscape_height}")
-                    background = background.resize((landscape_width, landscape_height), Image.Resampling.LANCZOS)
+        background = background.resize((new_width, new_height), Image.Resampling.LANCZOS)
 
-            # Convert images to RGBA mode to handle transparency
-            if background.mode != 'RGBA':
-                background = background.convert('RGBA')
-            if overlay.mode != 'RGBA':
-                overlay = overlay.convert('RGBA')
+        # Center crop
+        left = (new_width - landscape_width) // 2
+        top = (new_height - landscape_height) // 2
+        background = background.crop((
+            left,
+            top,
+            left + landscape_width,
+            top + landscape_height
+        ))
 
-            # Resize overlay if needed
-            if resize_overlay:
-                # Calculate scale to fit overlay within background while maintaining aspect ratio
-                bg_width, bg_height = background.size
-                overlay_width, overlay_height = overlay.size
+        background = background.convert("RGBA")
 
-                # Scale overlay to fit 80% of background size
-                scale_factor = min(
-                    (bg_width * 0.8) / overlay_width,
-                    (bg_height * 0.8) / overlay_height
-                )
+        # -----------------------------
+        # 3️⃣ Resize overlay proportionally
+        # -----------------------------
+        if resize_overlay:
+            max_width = int(landscape_width * 0.6)
+            max_height = int(landscape_height * 0.6)
 
-                new_overlay_size = (
-                    int(overlay_width * scale_factor),
-                    int(overlay_height * scale_factor)
-                )
+            scale = min(
+                max_width / overlay.width,
+                max_height / overlay.height
+            )
 
-                # Use LANCZOS for high-quality downsampling
-                overlay = overlay.resize(new_overlay_size, Image.Resampling.LANCZOS)
-                logger.info(f"Resized overlay from {overlay_width}x{overlay_height} to {new_overlay_size[0]}x{new_overlay_size[1]}")
+            overlay = overlay.resize(
+                (int(overlay.width * scale), int(overlay.height * scale)),
+                Image.Resampling.LANCZOS
+            )
 
-            # Calculate position if centering is requested
-            if position == (0, 0):
-                bg_width, bg_height = background.size
-                overlay_width, overlay_height = overlay.size
-                position = (
-                    (bg_width - overlay_width) // 2,
-                    (bg_height - overlay_height) // 2
-                )
-                logger.info(f"Centered overlay at position: {position}")
+        # -----------------------------
+        # 4️⃣ Slight alpha edge softening
+        # -----------------------------
+        r, g, b, a = overlay.split()
+        a = a.filter(ImageFilter.GaussianBlur(1))
+        overlay = Image.merge("RGBA", (r, g, b, a))
 
-            # Create a new image for compositing
-            composited = Image.new('RGBA', background.size)
-            composited.paste(background, (0, 0))
+        # -----------------------------
+        # 5️⃣ Auto brightness detection
+        # -----------------------------
+        bg_gray = background.convert("L")
+        brightness = np.mean(np.array(bg_gray))
 
-            # Paste overlay onto background with alpha channel as mask
-            composited.paste(overlay, position, overlay)
+        if brightness > 180:
+            shadow_opacity = 0.25
+        elif brightness > 120:
+            shadow_opacity = 0.35
+        else:
+            shadow_opacity = 0.45
 
-            # Convert to RGB for final output (removing alpha channel)
-            final_image = Image.new('RGB', composited.size, (255, 255, 255))
-            final_image.paste(composited, mask=composited.split()[3])  # Use alpha channel as mask
+        # -----------------------------
+        # 6️⃣ Center overlay
+        # -----------------------------
+        if position == (0, 0):
+            position = (
+                (landscape_width - overlay.width) // 2,
+                (landscape_height - overlay.height) // 2
+            )
 
-            # Save the result
-            output_path = str(self._temp_dir / f"composited-{uuid.uuid4()}.png")
-            final_image.save(output_path, 'PNG', quality=95, optimize=True)
+        composited = Image.new("RGBA", background.size)
+        composited.paste(background, (0, 0))
 
-            logger.info(f"Images composited successfully. Output saved to: {output_path}")
-            return output_path
+        # -----------------------------
+        # 7️⃣ Contact shadow (small + dark)
+        # -----------------------------
+        alpha = overlay.split()[3]
 
-        except Exception as e:
-            raise Exception(f"Failed to composite images: {str(e)}")
+        contact_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
+        contact_shadow.putalpha(alpha)
+        contact_shadow = contact_shadow.resize(
+            (overlay.width, int(overlay.height * 0.15)),
+            Image.Resampling.LANCZOS
+        )
+        contact_shadow = contact_shadow.filter(ImageFilter.GaussianBlur(8))
+
+        contact_alpha = contact_shadow.split()[3]
+        contact_alpha = ImageEnhance.Brightness(contact_alpha).enhance(shadow_opacity * 1.4)
+        contact_shadow.putalpha(contact_alpha)
+
+        contact_position = (
+            position[0],
+            position[1] + overlay.height - contact_shadow.height
+        )
+
+        composited.paste(contact_shadow, contact_position, contact_shadow)
+
+        # -----------------------------
+        # 8️⃣ Soft ambient shadow
+        # -----------------------------
+        soft_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
+        soft_shadow.putalpha(alpha)
+
+        soft_shadow = soft_shadow.resize(
+            (overlay.width, int(overlay.height * 0.6)),
+            Image.Resampling.LANCZOS
+        )
+
+        soft_shadow = soft_shadow.filter(ImageFilter.GaussianBlur(30))
+
+        soft_alpha = soft_shadow.split()[3]
+        soft_alpha = ImageEnhance.Brightness(soft_alpha).enhance(shadow_opacity)
+        soft_shadow.putalpha(soft_alpha)
+
+        soft_position = (
+            position[0],
+            position[1] + overlay.height - int(overlay.height * 0.3)
+        )
+
+        composited.paste(soft_shadow, soft_position, soft_shadow)
+
+        # -----------------------------
+        # 9️⃣ Paste overlay on top
+        # -----------------------------
+        composited.paste(overlay, position, overlay)
+
+        # -----------------------------
+        # 🔟 Subtle global color blending
+        # -----------------------------
+        avg_color = np.mean(np.array(background.convert("RGB")).reshape(-1, 3), axis=0)
+        tint_layer = Image.new("RGBA", composited.size,
+                            (int(avg_color[0]), int(avg_color[1]), int(avg_color[2]), 20))
+        composited = Image.alpha_composite(composited, tint_layer)
+
+        # -----------------------------
+        # 1️⃣1️⃣ Subtle grain
+        # -----------------------------
+        final = composited.convert("RGB")
+        np_img = np.array(final)
+        noise = np.random.randint(-2, 3, np_img.shape, dtype='int16')
+        np_img = np.clip(np_img + noise, 0, 255).astype('uint8')
+        final = Image.fromarray(np_img)
+
+        # -----------------------------
+        # 1️⃣2️⃣ Save
+        # -----------------------------
+        output_path = str(self._temp_dir / f"composited-{uuid.uuid4()}.png")
+        final.save(output_path, "PNG", optimize=True)
+
+        return output_path
+
 
     def _download_image_from_url(self, image_url: str) -> str:
         """

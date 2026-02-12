@@ -395,3 +395,50 @@ class MergeImageWithVideoResponse(BaseModel):
     error: Optional[str] = Field(None, description="Error message if failed")
     progress: Optional[int] = Field(None, description="Progress percentage (0-100)")
     created_at: Optional[str] = Field(None, description="When the task was created (ISO format)")
+
+
+class ShadowGenerationRequest(BaseModel):
+    """Request format for adding shadow effect to product images"""
+    image_url: str = Field(..., description="URL of the product image")
+    product_description: str = Field(..., description="Product description to extract shadow prompt context")
+    user_id: str = Field(..., description="User ID for credit tracking")
+    scene_id: Optional[str] = Field(None, description="Scene ID to update after completion")
+    short_id: Optional[str] = Field(None, description="Short ID")
+
+
+class ShadowGenerationResponse(BaseModel):
+    """Response format for shadow generation (async pattern)"""
+    success: bool = Field(..., description="Whether the operation succeeded")
+    task_id: Optional[str] = Field(None, description="Task ID for polling status")
+    status: Optional[str] = Field(None, description="Task status (pending, processing, completed, failed)")
+    image_url: Optional[str] = Field(None, description="URL of the image with shadow effect (when completed)")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    progress: Optional[float] = Field(None, description="Progress percentage (0-100)")
+    current_step: Optional[str] = Field(None, description="Current processing step")
+    created_at: Optional[datetime] = Field(None, description="When the task was created")
+
+
+class BackgroundGenerationRequest(BaseModel):
+    """Request format for generating product backgrounds using AI"""
+    product_description: str = Field(..., description="Product description to extract background context")
+    user_id: str = Field(..., description="User ID for credit tracking")
+    mood: Optional[str] = Field(None, description="Mood/feeling for the background (e.g., 'Energetic', 'Calm')")
+    style: Optional[str] = Field(None, description="Visual style for the background (e.g., 'Film Grain', 'Minimalist')")
+    environment: Optional[str] = Field(None, description="Environment setting (e.g., 'Indoor Studio', 'Outdoor Nature')")
+    manual_prompt: Optional[str] = Field(None, description="Manual prompt for background generation (skips OpenAI if provided)")
+    scene_id: Optional[str] = Field(None, description="Scene ID to update after completion")
+    short_id: Optional[str] = Field(None, description="Short ID")
+
+
+class BackgroundGenerationResponse(BaseModel):
+    """Response format for background generation (async pattern)"""
+    success: bool = Field(..., description="Whether the operation succeeded")
+    task_id: Optional[str] = Field(None, description="Task ID for polling status")
+    status: Optional[str] = Field(None, description="Task status (pending, processing, completed, failed)")
+    image_url: Optional[str] = Field(None, description="URL of the generated background image (when completed)")
+    message: str = Field(..., description="Status message")
+    error: Optional[str] = Field(None, description="Error message if failed")
+    progress: Optional[float] = Field(None, description="Progress percentage (0-100)")
+    current_step: Optional[str] = Field(None, description="Current processing step")
+    created_at: Optional[datetime] = Field(None, description="When the task was created")

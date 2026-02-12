@@ -16,7 +16,8 @@ from app.models import (
     TestAudioRequest, TestAudioResponse, AudioGenerationRequest, AudioGenerationResponse,
     ImageCompositeRequest, ImageCompositeResponse, GenerateScene1RequestFromNextJS, 
     GenerateScene1Request, GenerateScene1Response, Scene1Metadata, Scene1ProductInfo,
-    MergeImageWithVideoRequest, MergeImageWithVideoResponse
+    MergeImageWithVideoRequest, MergeImageWithVideoResponse, ShadowGenerationRequest, ShadowGenerationResponse,
+    BackgroundGenerationRequest, BackgroundGenerationResponse
 )
 from app.services.scraping_service import scraping_service
 from app.services.video_generation_service import video_generation_service
@@ -29,6 +30,8 @@ from app.services.audio_generation_service import audio_generation_service
 from app.services.image_processing_service import image_processing_service
 from app.services.scheduler_service import get_scheduler_status, run_cleanup_now
 from app.services.session_service import session_service
+from app.services.shadow_generation_service import shadow_generation_service
+from app.services.background_generation_service import background_generation_service
 from app.config import settings
 from app.security import (
     get_api_key, validate_request_security, validate_scrape_request,
@@ -686,6 +689,301 @@ def analyze_image(
     except Exception as e:
         logger.error(f"Error in image analysis endpoint: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Image analysis failed: {str(e)}")
+
+
+@router.post("/image/add-shadow", response_model=ShadowGenerationResponse)
+def add_shadow_to_image(
+    request: ShadowGenerationRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> ShadowGenerationResponse:
+    """
+    Add a realistic shadow effect to a product image (Async/Polling Pattern).
+    
+    Returns immediately with a task_id for polling.
+    Poll GET `/image/add-shadow/tasks/{task_id}` to check status.
+    
+    This endpoint accepts a product image URL and description, then:
+    1. Extracts a shadow generation prompt from the product description using OpenAI
+    2. Generates a new image with shadow effect using DALL-E
+    3. Uploads the result to storage
+    
+    The shadow effect enhances depth and makes the product stand out with natural lighting.
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    logger.info("\n" + "=" * 80)
+    logger.info("API ENDPOINT: /image/add-shadow - REQUEST RECEIVED (ASYNC)")
+    logger.info("=" * 80)
+    
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        logger.info("Request Details:")
+        logger.info(f"  → User ID: {request.user_id}")
+        logger.info(f"  → Image URL: {request.image_url[:80]}...")
+        logger.info(f"  → Product Description: {request.product_description[:100]}...")
+        logger.info(f"  → Scene ID: {request.scene_id or 'N/A'}")
+        logger.info(f"  → API Key: {'Provided' if api_key else 'Not provided'}")
+        logger.info("-" * 80)
+        
+        logger.info("Starting async shadow generation task...")
+        
+        # Start async shadow generation task
+        result = shadow_generation_service.start_shadow_generation_task(request)
+        
+        logger.info("-" * 80)
+        logger.info("Task Created:")
+        logger.info(f"  → Task ID: {result['task_id']}")
+        logger.info(f"  → Status: {result['status']}")
+        logger.info(f"  → Message: {result['message']}")
+        logger.info("=" * 80)
+        logger.info("API ENDPOINT: /image/add-shadow - TASK STARTED SUCCESSFULLY")
+        logger.info("=" * 80 + "\n")
+        
+        return ShadowGenerationResponse(
+            success=True,
+            task_id=result['task_id'],
+            status=result['status'],
+            message=result['message'],
+            progress=0,
+            current_step='Task started',
+            created_at=datetime.fromisoformat(result['created_at'])
+        )
+        
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error("API ENDPOINT: /image/add-shadow - UNEXPECTED ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Exception Type: {type(e).__name__}")
+        logger.error(f"Exception Message: {str(e)}")
+        logger.error("=" * 80, exc_info=True)
+        logger.error("=" * 80 + "\n")
+        raise HTTPException(status_code=500, detail=f"Failed to start shadow generation: {str(e)}")
+
+
+@router.get("/image/add-shadow/tasks/{task_id}", response_model=ShadowGenerationResponse)
+def get_shadow_task_status(
+    task_id: str,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> ShadowGenerationResponse:
+    """
+    Poll the status of a shadow generation task.
+    
+    Returns the current status of the task:
+    - pending: Task is queued
+    - processing: Task is being processed
+    - completed: Task finished successfully (image_url available)
+    - failed: Task failed (error message available)
+    
+    Authentication: Optional API key via Bearer token
+    """
+    try:
+        task_info = shadow_generation_service.get_task_status(task_id)
+        
+        if not task_info:
+            raise HTTPException(status_code=404, detail="Shadow generation task not found")
+        
+        # Check if completed and has image URL
+        if task_info['status'] == TaskStatus.COMPLETED and task_info.get('result_image_url'):
+            return ShadowGenerationResponse(
+                success=True,
+                task_id=task_id,
+                status=task_info['status'],
+                image_url=task_info['result_image_url'],
+                message='Shadow generation completed successfully',
+                progress=task_info.get('progress', 100),
+                current_step=task_info.get('current_step', 'Completed'),
+                created_at=datetime.fromisoformat(task_info['created_at'])
+            )
+        elif task_info['status'] == TaskStatus.FAILED:
+            return ShadowGenerationResponse(
+                success=False,
+                task_id=task_id,
+                status=task_info['status'],
+                image_url=None,
+                message='Shadow generation failed',
+                error=task_info.get('error_message'),
+                progress=task_info.get('progress', 0),
+                current_step=task_info.get('current_step', 'Failed'),
+                created_at=datetime.fromisoformat(task_info['created_at'])
+            )
+        else:
+            # Still pending or processing
+            return ShadowGenerationResponse(
+                success=True,
+                task_id=task_id,
+                status=task_info['status'],
+                image_url=None,
+                message=f"Task is {task_info['status']}",
+                progress=task_info.get('progress', 0),
+                current_step=task_info.get('current_step', 'Processing'),
+                created_at=datetime.fromisoformat(task_info['created_at'])
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting shadow task status {task_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
+
+
+@router.post("/image/generate-background", response_model=BackgroundGenerationResponse)
+def generate_background_image(
+    request: BackgroundGenerationRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> BackgroundGenerationResponse:
+    """
+    Generate a product background image using AI (Async Pattern)
+    
+    Returns immediately with a task_id for polling.
+    Poll GET `/image/generate-background/tasks/{task_id}` to check status.
+    
+    This endpoint accepts a product description and environment variables, then:
+    1. Extracts a background generation prompt from the product description and environment using OpenAI
+    2. Generates a background image using Vertex AI Imagen 4.0
+    3. Uploads the result to storage
+    
+    Environment variables:
+    - mood: Mood/feeling for the background (e.g., "Energetic", "Calm", "Professional")
+    - style: Visual style for the background (e.g., "Film Grain", "Minimalist", "Vibrant")
+    - environment: Environment setting (e.g., "Indoor Studio", "Outdoor Nature", "Urban") - optional
+    
+    Authentication: Optional API key via Bearer token
+    Rate Limits: Based on API key configuration
+    """
+    logger.info("\n" + "=" * 80)
+    logger.info("API ENDPOINT: /image/generate-background - REQUEST RECEIVED (ASYNC)")
+    logger.info("=" * 80)
+    
+    try:
+        # Security validation - DISABLED FOR DEVELOPMENT
+        # TODO: Re-enable security checks for production by uncommenting the lines below
+        # validate_request_security(http_request, api_key)
+        
+        logger.info("Request Details:")
+        logger.info(f"  → User ID: {request.user_id}")
+        logger.info(f"  → Product Description: {request.product_description[:100]}...")
+        logger.info(f"  → Mood: {request.mood or 'N/A'}")
+        logger.info(f"  → Style: {request.style or 'N/A'}")
+        logger.info(f"  → Environment: {request.environment or 'N/A'}")
+        logger.info(f"  → Manual Prompt: {request.manual_prompt[:100] + '...' if request.manual_prompt and len(request.manual_prompt) > 100 else request.manual_prompt or 'N/A'}")
+        logger.info(f"  → Scene ID: {request.scene_id or 'N/A'}")
+        logger.info(f"  → API Key: {'Provided' if api_key else 'Not provided'}")
+        logger.info("-" * 80)
+        
+        logger.info("Starting async background generation task...")
+        
+        # Start async background generation task
+        result = background_generation_service.start_background_generation_task(
+            user_id=request.user_id,
+            product_description=request.product_description,
+            mood=request.mood,
+            style=request.style,
+            environment=request.environment,
+            manual_prompt=request.manual_prompt,
+            scene_id=request.scene_id,
+            short_id=request.short_id
+        )
+        
+        logger.info("-" * 80)
+        logger.info("Task Created:")
+        logger.info(f"  → Task ID: {result['task_id']}")
+        logger.info(f"  → Status: {result['status']}")
+        logger.info(f"  → Message: {result['message']}")
+        logger.info("=" * 80)
+        logger.info("API ENDPOINT: /image/generate-background - TASK STARTED SUCCESSFULLY")
+        logger.info("=" * 80 + "\n")
+        
+        return BackgroundGenerationResponse(
+            success=True,
+            task_id=result['task_id'],
+            status=result['status'],
+            message=result['message'],
+            progress=0,
+            current_step='Task started',
+            created_at=datetime.fromisoformat(result['created_at'])
+        )
+        
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error("API ENDPOINT: /image/generate-background - UNEXPECTED ERROR")
+        logger.error("=" * 80)
+        logger.error(f"Exception Type: {type(e).__name__}")
+        logger.error(f"Exception Message: {str(e)}")
+        logger.error("=" * 80, exc_info=True)
+        logger.error("=" * 80 + "\n")
+        raise HTTPException(status_code=500, detail=f"Failed to start background generation: {str(e)}")
+
+
+@router.get("/image/generate-background/tasks/{task_id}", response_model=BackgroundGenerationResponse)
+def get_background_task_status(
+    task_id: str,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> BackgroundGenerationResponse:
+    """
+    Poll the status of a background generation task.
+    
+    Returns the current status of the task:
+    - pending: Task is queued
+    - processing: Task is being processed
+    - completed: Task finished successfully (image_url available)
+    - failed: Task failed (error message available)
+    
+    Authentication: Optional API key via Bearer token
+    """
+    try:
+        task_info = background_generation_service.get_task_status(task_id)
+        
+        if not task_info:
+            raise HTTPException(status_code=404, detail="Background generation task not found")
+        
+        # Check if completed and has image URL
+        if task_info['status'] == TaskStatus.COMPLETED and task_info.get('result_image_url'):
+            return BackgroundGenerationResponse(
+                success=True,
+                task_id=task_id,
+                status=task_info['status'],
+                image_url=task_info['result_image_url'],
+                message='Background generation completed successfully',
+                progress=task_info.get('progress', 100),
+                current_step=task_info.get('current_step', 'Completed'),
+                created_at=datetime.fromisoformat(task_info['created_at'])
+            )
+        elif task_info['status'] == TaskStatus.FAILED:
+            return BackgroundGenerationResponse(
+                success=False,
+                task_id=task_id,
+                status=task_info['status'],
+                image_url=None,
+                message='Background generation failed',
+                error=task_info.get('error_message'),
+                progress=task_info.get('progress', 0),
+                current_step=task_info.get('current_step', 'Failed'),
+                created_at=datetime.fromisoformat(task_info['created_at'])
+            )
+        else:
+            # Still pending or processing
+            return BackgroundGenerationResponse(
+                success=True,
+                task_id=task_id,
+                status=task_info['status'],
+                image_url=None,
+                message=f"Task is {task_info['status']}",
+                progress=task_info.get('progress', 0),
+                current_step=task_info.get('current_step', 'Processing'),
+                created_at=datetime.fromisoformat(task_info['created_at'])
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting background task status {task_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
 
 
 @router.get("/image/analyze/tasks/{task_id}", response_model=ImageAnalysisResponse)
