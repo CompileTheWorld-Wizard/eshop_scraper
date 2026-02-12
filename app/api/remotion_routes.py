@@ -20,12 +20,19 @@ router = APIRouter(prefix="/remotion", tags=["remotion"])
 
 # Request/Response Models
 class ProductInfo(BaseModel):
-    """Product information for video generation."""
-    title: str
-    price: str
-    rating: float
-    reviewCount: int
-    currency: str = "USD"
+    """Product information for video generation - accepts flexible product data."""
+    # Fields can be anything - we pass them as-is to Remotion server
+    class Config:
+        extra = "allow"  # Allow any additional fields
+    
+    # Optional common fields that Remotion might expect
+    title: Optional[str] = None
+    name: Optional[str] = None
+    price: Optional[str] = None
+    rating: Optional[float] = None
+    reviewCount: Optional[int] = None
+    currency: Optional[str] = "USD"
+    description: Optional[str] = None
 
 
 class VideoMetadata(BaseModel):
@@ -70,7 +77,7 @@ async def start_video_generation(request: StartVideoRequest):
     **Next.js calls**: `/api/remotion/videos`
     **Forwards to**: `POST {REMOTION_SERVER}/videos`
     
-    Example:
+    Example with full product info:
     ```
     POST /api/remotion/videos
     {
@@ -82,6 +89,25 @@ async def start_video_generation(request: StartVideoRequest):
             "rating": 4.5,
             "reviewCount": 123,
             "currency": "USD"
+        },
+        "metadata": {
+            "short_id": "abc123",
+            "scene_id": "uuid",
+            "sceneNumber": 1
+        }
+    }
+    ```
+    
+    Example with minimal product info:
+    ```
+    POST /api/remotion/videos
+    {
+        "template": "product-modern-v1",
+        "imageUrl": "https://...",
+        "product": {
+            "name": "Columbia Men's Newton Ridge Plus Ii Waterproof Hiking Shoe",
+            "price": "USD 50.49",
+            "description": "High quality hiking shoe"
         },
         "metadata": {
             "short_id": "abc123",
@@ -104,12 +130,16 @@ async def start_video_generation(request: StartVideoRequest):
             f"[API] Received video generation request: "
             f"template={request.template}, scene={request.metadata.sceneNumber}"
         )
+        logger.info(f"[API] Product data received: {request.product.dict()}")
+        
+        # Convert product dict and exclude None values to keep payload clean
+        product_dict = request.product.dict(exclude_none=True)
         
         # Forward request to Remotion server
         result = await remotion_proxy.start_video_generation(
             template=request.template,
             image_url=request.imageUrl,
-            product=request.product.dict(),
+            product=product_dict,
             metadata=request.metadata.dict()
         )
         

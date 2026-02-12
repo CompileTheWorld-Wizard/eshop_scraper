@@ -72,6 +72,8 @@ class RemotionProxy:
             
             logger.info(f"[REMOTION PROXY] Starting video generation: {url}")
             logger.info(f"[REMOTION PROXY] Template: {template}, Scene: {metadata.get('sceneNumber')}")
+            logger.info(f"[REMOTION PROXY] Product data being sent: {product}")
+            logger.info(f"[REMOTION PROXY] Full payload: {payload}")
             
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
                 response = await client.post(url, json=payload)

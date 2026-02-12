@@ -19,7 +19,7 @@ from io import BytesIO
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
-from PIL import Image, ImageFilter, ImageEnhance
+from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 import cv2
 import numpy as np
 
@@ -289,7 +289,8 @@ class ImageProcessingService:
         position=(0, 0),
         resize_overlay=True,
         landscape_width=1920,
-        landscape_height=1080
+        landscape_height=1080,
+        add_reflection=True
     ) -> str:
         # -----------------------------
         # 1️⃣ Load images
@@ -298,7 +299,7 @@ class ImageProcessingService:
         overlay = Image.open(overlay_path).convert("RGBA")
 
         # -----------------------------
-        # 2️⃣ Resize background WITHOUT distortion
+        # 2️⃣ Resize background without distortion
         # -----------------------------
         bg_ratio = background.width / background.height
         target_ratio = landscape_width / landscape_height
@@ -318,12 +319,8 @@ class ImageProcessingService:
         left = (new_width - landscape_width) // 2
         top = (new_height - landscape_height) // 2
         background = background.crop((
-            left,
-            top,
-            left + landscape_width,
-            top + landscape_height
+            left, top, left + landscape_width, top + landscape_height
         ))
-
         background = background.convert("RGBA")
 
         # -----------------------------
@@ -332,39 +329,32 @@ class ImageProcessingService:
         if resize_overlay:
             max_width = int(landscape_width * 0.6)
             max_height = int(landscape_height * 0.6)
-
-            scale = min(
-                max_width / overlay.width,
-                max_height / overlay.height
-            )
-
+            scale = min(max_width / overlay.width, max_height / overlay.height)
             overlay = overlay.resize(
                 (int(overlay.width * scale), int(overlay.height * scale)),
                 Image.Resampling.LANCZOS
             )
 
         # -----------------------------
-        # 4️⃣ Slight alpha edge softening
+        # 4️⃣ Smooth overlay edges
         # -----------------------------
         r, g, b, a = overlay.split()
-        a = a.filter(ImageFilter.GaussianBlur(1))
+        a = a.filter(ImageFilter.GaussianBlur(2))  # slightly more than 1
         overlay = Image.merge("RGBA", (r, g, b, a))
 
         # -----------------------------
-        # 5️⃣ Auto brightness detection
+        # 5️⃣ Determine shadow opacity based on background brightness
         # -----------------------------
-        bg_gray = background.convert("L")
-        brightness = np.mean(np.array(bg_gray))
-
-        if brightness > 180:
+        bg_gray = np.mean(np.array(background.convert("L")))
+        if bg_gray > 180:
             shadow_opacity = 0.25
-        elif brightness > 120:
+        elif bg_gray > 120:
             shadow_opacity = 0.35
         else:
             shadow_opacity = 0.45
 
         # -----------------------------
-        # 6️⃣ Center overlay
+        # 6️⃣ Center overlay if no position provided
         # -----------------------------
         if position == (0, 0):
             position = (
@@ -375,28 +365,20 @@ class ImageProcessingService:
         composited = Image.new("RGBA", background.size)
         composited.paste(background, (0, 0))
 
-        # -----------------------------
-        # 7️⃣ Contact shadow (small + dark)
-        # -----------------------------
         alpha = overlay.split()[3]
 
+        # -----------------------------
+        # 7️⃣ Contact shadow (under the object)
+        # -----------------------------
         contact_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
         contact_shadow.putalpha(alpha)
-        contact_shadow = contact_shadow.resize(
-            (overlay.width, int(overlay.height * 0.15)),
-            Image.Resampling.LANCZOS
-        )
+        new_h = int(overlay.height * 0.15)  # small contact shadow height
+        contact_shadow = contact_shadow.resize((overlay.width, new_h), Image.Resampling.LANCZOS)
         contact_shadow = contact_shadow.filter(ImageFilter.GaussianBlur(8))
-
-        contact_alpha = contact_shadow.split()[3]
-        contact_alpha = ImageEnhance.Brightness(contact_alpha).enhance(shadow_opacity * 1.4)
-        contact_shadow.putalpha(contact_alpha)
-
-        contact_position = (
-            position[0],
-            position[1] + overlay.height - contact_shadow.height
-        )
-
+        shadow_alpha = contact_shadow.split()[3]
+        shadow_alpha = ImageEnhance.Brightness(shadow_alpha).enhance(shadow_opacity * 1.4)
+        contact_shadow.putalpha(shadow_alpha)
+        contact_position = (position[0], position[1] + overlay.height - contact_shadow.height)
         composited.paste(contact_shadow, contact_position, contact_shadow)
 
         # -----------------------------
@@ -404,55 +386,56 @@ class ImageProcessingService:
         # -----------------------------
         soft_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
         soft_shadow.putalpha(alpha)
-
-        soft_shadow = soft_shadow.resize(
-            (overlay.width, int(overlay.height * 0.6)),
-            Image.Resampling.LANCZOS
-        )
-
+        soft_h = int(overlay.height * 0.6)
+        soft_shadow = soft_shadow.resize((overlay.width, soft_h), Image.Resampling.LANCZOS)
         soft_shadow = soft_shadow.filter(ImageFilter.GaussianBlur(30))
-
         soft_alpha = soft_shadow.split()[3]
         soft_alpha = ImageEnhance.Brightness(soft_alpha).enhance(shadow_opacity)
         soft_shadow.putalpha(soft_alpha)
-
-        soft_position = (
-            position[0],
-            position[1] + overlay.height - int(overlay.height * 0.3)
-        )
-
+        soft_position = (position[0], position[1] + overlay.height - int(overlay.height * 0.3))
         composited.paste(soft_shadow, soft_position, soft_shadow)
 
         # -----------------------------
-        # 9️⃣ Paste overlay on top
+        # 9️⃣ Optional reflection
+        # -----------------------------
+        if add_reflection:
+            reflection = overlay.copy().transpose(Image.FLIP_TOP_BOTTOM)
+            r, g, b, a = reflection.split()
+            a = ImageEnhance.Brightness(a).enhance(0.15)  # low opacity reflection
+            a = a.filter(ImageFilter.GaussianBlur(5))
+            reflection.putalpha(a)
+            reflection_position = (position[0], position[1] + overlay.height)
+            composited.paste(reflection, reflection_position, reflection)
+
+        # -----------------------------
+        # 🔟 Paste overlay
         # -----------------------------
         composited.paste(overlay, position, overlay)
 
         # -----------------------------
-        # 🔟 Subtle global color blending
+        # 1️⃣1️⃣ Adaptive brightness / color blending
         # -----------------------------
         avg_color = np.mean(np.array(background.convert("RGB")).reshape(-1, 3), axis=0)
         tint_layer = Image.new("RGBA", composited.size,
-                            (int(avg_color[0]), int(avg_color[1]), int(avg_color[2]), 20))
+                            (int(avg_color[0]), int(avg_color[1]), int(avg_color[2]), 10))
         composited = Image.alpha_composite(composited, tint_layer)
 
         # -----------------------------
-        # 1️⃣1️⃣ Subtle grain
+        # 1️⃣2️⃣ Add subtle grain / noise
         # -----------------------------
         final = composited.convert("RGB")
         np_img = np.array(final)
-        noise = np.random.randint(-2, 3, np_img.shape, dtype='int16')
+        noise = np.random.randint(-1, 2, np_img.shape, dtype='int16')
         np_img = np.clip(np_img + noise, 0, 255).astype('uint8')
         final = Image.fromarray(np_img)
 
         # -----------------------------
-        # 1️⃣2️⃣ Save
+        # 1️⃣3️⃣ Save
         # -----------------------------
         output_path = str(self._temp_dir / f"composited-{uuid.uuid4()}.png")
         final.save(output_path, "PNG", optimize=True)
 
         return output_path
-
 
     def _download_image_from_url(self, image_url: str) -> str:
         """
