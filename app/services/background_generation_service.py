@@ -61,14 +61,39 @@ class BackgroundGenerationService:
     def _check_vertex_availability(self):
         """Check if Vertex AI is available for image generation"""
         try:
-            if self.vertex_manager and self.vertex_manager.is_available():
+            # Basic presence check
+            if not self.vertex_manager:
+                logger.warning("✗ Vertex manager instance is None")
+                logger.warning("→ Background generation will not work without Vertex AI manager")
+                return
+
+            # Try to call is_available and surface any exception details
+            try:
+                available = self.vertex_manager.is_available()
+            except Exception as inner_exc:
+                logger.error("✗ Exception while calling vertex_manager.is_available()")
+                logger.exception(inner_exc)
+                logger.warning("→ Background generation may not work properly due to the above error")
+                return
+
+            if available:
                 logger.info("✓ Vertex AI Imagen initialized for image generation")
                 logger.info("✓ Background Generation Service ready (Async mode: OpenAI + Vertex AI)")
             else:
-                logger.warning("✗ Vertex AI is not available!")
+                logger.warning("✗ Vertex AI is not available (is_available() returned False)!")
+                # Log common environment/setting clues to help debug credential/config issues
+                try:
+                    ga_creds = getattr(settings, 'GOOGLE_APPLICATION_CREDENTIALS', None)
+                    vertex_proj = getattr(settings, 'VERTEX_PROJECT', None)
+                    logger.warning(f"→ GOOGLE_APPLICATION_CREDENTIALS={ga_creds}")
+                    logger.warning(f"→ VERTEX_PROJECT={vertex_proj}")
+                except Exception:
+                    logger.debug("Could not read some settings for additional diagnostics")
                 logger.warning("→ Background generation will not work without Vertex AI")
         except Exception as e:
+            # Catch-all to ensure service initialization continues but logs useful info
             logger.error(f"✗ Failed to check Vertex AI availability: {e}")
+            logger.exception(e)
             logger.warning("→ Background generation may not work properly")
     
     def start_background_generation_task(
