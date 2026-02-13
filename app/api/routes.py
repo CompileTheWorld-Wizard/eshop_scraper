@@ -17,7 +17,8 @@ from app.models import (
     ImageCompositeRequest, ImageCompositeResponse, GenerateScene1RequestFromNextJS, 
     GenerateScene1Request, GenerateScene1Response, Scene1Metadata, Scene1ProductInfo,
     MergeImageWithVideoRequest, MergeImageWithVideoResponse, ShadowGenerationRequest, ShadowGenerationResponse,
-    BackgroundGenerationRequest, BackgroundGenerationResponse
+    BackgroundGenerationRequest, BackgroundGenerationResponse,
+    ExtractBackgroundPromptRequest, ExtractBackgroundPromptResponse
 )
 from app.services.scraping_service import scraping_service
 from app.services.video_generation_service import video_generation_service
@@ -984,6 +985,29 @@ def get_background_task_status(
     except Exception as e:
         logger.error(f"Error getting background task status {task_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get task status: {str(e)}")
+
+
+@router.post("/image/extract-background-prompt", response_model=ExtractBackgroundPromptResponse)
+def extract_background_prompt(
+    request: ExtractBackgroundPromptRequest,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> ExtractBackgroundPromptResponse:
+    """
+    Extract the background-generation prompt from a product description using OpenAI.
+    Returns the prompt string that would be sent to Vertex for background generation.
+    Use when the next server sends only product description and you need the prompt.
+    """
+    result = background_generation_service.extract_background_prompt(
+        product_description=request.product_description,
+        mood=request.mood,
+        style=request.style,
+        environment=request.environment,
+    )
+    return ExtractBackgroundPromptResponse(
+        success=result["error"] is None,
+        prompt=result["prompt"],
+        error=result["error"],
+    )
 
 
 @router.get("/image/analyze/tasks/{task_id}", response_model=ImageAnalysisResponse)

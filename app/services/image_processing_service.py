@@ -23,6 +23,7 @@ from PIL import Image, ImageFilter, ImageEnhance, ImageOps
 import cv2
 import numpy as np
 
+
 from app.logging_config import get_logger
 from app.utils.supabase_utils import supabase_manager
 from app.config import settings
@@ -1236,7 +1237,7 @@ class ImageProcessingService:
         except Exception as e:
             logger.error(f"❌ Error getting task status for {task_id}: {e}", exc_info=True)
             return None
-
+   
     def merge_image_with_video(
         self,
         product_image_url: str,
@@ -1246,7 +1247,10 @@ class ImageProcessingService:
         scale: float = 0.4,
         position: str = "center",
         duration: Optional[int] = None,
-        add_animation: bool = True
+        add_animation: bool = True,
+        add_shadow: bool = True,  # New parameter
+        shadow_blur_radius: int = 25,  # New parameter for shadow blur
+        shadow_offset: Tuple[int, int] = (15, 15)  # New parameter for shadow offset
     ) -> Dict[str, Any]:
         """
         Merge a product image (without background) with a background video using OpenCV.
@@ -1260,6 +1264,9 @@ class ImageProcessingService:
             position: Position of product ("center", "top", "bottom", "left", "right")
             duration: Optional duration in seconds (if None, uses full video duration)
             add_animation: Whether to add zoom and floating animations
+            add_shadow: Whether to add shadow effect to the product
+            shadow_blur_radius: Blur radius for shadow softening (default: 25)
+            shadow_offset: Shadow offset as (x, y) tuple in pixels (default: (15, 15))
         
         Returns:
             Dict containing:
@@ -1270,6 +1277,7 @@ class ImageProcessingService:
         temp_product_path = None
         temp_video_path = None
         temp_output_path = None
+        temp_shadow_product_path = None
         
         try:
             print("\n" + "="*80)
@@ -1283,27 +1291,49 @@ class ImageProcessingService:
             logger.info(f"   - Position: {position}")
             logger.info(f"   - Duration Limit: {duration}s" if duration else "   - Duration Limit: Full video")
             logger.info(f"   - Animation: {'Enabled (zoom + float)' if add_animation else 'Disabled'}")
+            logger.info(f"   - Shadow Effect: {'Enabled' if add_shadow else 'Disabled'}")
+            if add_shadow:
+                logger.info(f"   - Shadow Blur Radius: {shadow_blur_radius}")
+                logger.info(f"   - Shadow Offset: {shadow_offset}")
             
             # Step 1: Download product image
-            print("\n📥 STEP 1/5: Downloading Product Image")
+            print("\n📥 STEP 1/6: Downloading Product Image")
             print("-" * 80)
             logger.info(f"🖼️  Product image URL: {product_image_url[:80]}...")
             temp_product_path = self._download_image_from_url(product_image_url)
             logger.info(f"✅ Product image downloaded: {temp_product_path}")
+
+            # Step 2: Add shadow effect to product image using PIL
+            if add_shadow:
+                print("\n✨ STEP 2/6: Adding Shadow Effect to Product Image (PIL)")
+                print("-" * 80)
+                logger.info("🔄 Adding shadow effect to product image using PIL...")
+                
+                temp_shadow_product_path = self._add_pil_shadow_to_image(
+                    temp_product_path,
+                    blur_radius=shadow_blur_radius,
+                    offset=shadow_offset
+                )
+                logger.info(f"✅ Shadow effect added: {temp_shadow_product_path}")
+                
+                # Use the shadow-enhanced image for further processing
+                product_path_for_merge = temp_shadow_product_path
+            else:
+                product_path_for_merge = temp_product_path
             
-            # Step 2: Download background video
-            print("\n📥 STEP 2/5: Downloading Background Video")
+            # Step 3: Download background video
+            print("\n📥 STEP 3/6: Downloading Background Video")
             print("-" * 80)
             logger.info(f"🎥 Background video URL: {background_video_url[:80]}...")
             temp_video_path = self._download_video_from_url(background_video_url)
             logger.info(f"✅ Background video downloaded: {temp_video_path}")
             
-            # Step 3: Merge using OpenCV
-            print("\n🎨 STEP 3/5: Merging Product with Video (OpenCV Processing)")
+            # Step 4: Merge using OpenCV
+            print("\n🎨 STEP 4/6: Merging Product with Video (OpenCV Processing)")
             print("-" * 80)
             logger.info("🔄 Starting OpenCV video processing...")
             temp_output_path = self._merge_with_opencv(
-                temp_product_path,
+                product_path_for_merge,  # Use shadow-enhanced image if shadow was added
                 temp_video_path,
                 scale=scale,
                 position=position,
@@ -1312,8 +1342,8 @@ class ImageProcessingService:
             )
             logger.info(f"✅ Video merge completed: {temp_output_path}")
             
-            # Step 4: Upload to Supabase storage
-            print("\n☁️  STEP 4/5: Uploading Merged Video to Supabase")
+            # Step 5: Upload to Supabase storage
+            print("\n☁️  STEP 5/6: Uploading Merged Video to Supabase")
             print("-" * 80)
             logger.info("📤 Uploading video to Supabase storage...")
             video_url = self._upload_video_to_supabase(
@@ -1324,8 +1354,8 @@ class ImageProcessingService:
             logger.info(f"✅ Video uploaded successfully")
             logger.info(f"🔗 Video URL: {video_url}")
             
-            # Step 5: Update scene in database
-            print("\n💾 STEP 5/5: Updating Database")
+            # Step 6: Update scene in database
+            print("\n💾 STEP 6/6: Updating Database")
             print("-" * 80)
             logger.info(f"📝 Updating scene {scene_id} in video_scenes table...")
             self._update_scene_video_url(scene_id, video_url)
@@ -1359,13 +1389,123 @@ class ImageProcessingService:
         
         finally:
             # Clean up temporary files
-            for temp_path in [temp_product_path, temp_video_path, temp_output_path]:
+            for temp_path in [temp_product_path, temp_video_path, temp_output_path, temp_shadow_product_path]:
                 if temp_path and os.path.exists(temp_path):
                     try:
                         os.unlink(temp_path)
                         logger.debug(f"Cleaned up temporary file: {temp_path}")
                     except Exception as cleanup_error:
                         logger.warning(f"Failed to clean up temporary file {temp_path}: {cleanup_error}")
+
+    def _add_pil_shadow_to_image(
+        self,
+        image_path: str,
+        blur_radius: int = 25,
+        offset: Tuple[int, int] = (15, 15),
+        shadow_color: Tuple[int, int, int] = (0, 0, 0),
+        shadow_angle: float = 135,
+        shadow_distance: float = 30,
+        shadow_opacity: float = 0.35,
+        contact_height_ratio: float = 0.15,
+        contact_blur: int = 8,
+        ao_intensity: float = 0.4,
+        ao_blur: int = 30,
+    ) -> str:
+        """
+        Add cast shadow, contact shadow, and ambient occlusion to a transparent PNG (same pipeline as compositing).
+        
+        Args:
+            image_path: Path to the input PNG image with transparency
+            blur_radius: Blur for directional cast shadow (clamped; used as cast shadow blur)
+            offset: Optional (x, y) offset; if non-zero, used to derive shadow_angle and shadow_distance
+            shadow_color: Shadow color as RGB tuple (default: black); reserved for future use
+            shadow_angle: Cast shadow direction in degrees (0=right, 90=down, 135=down-left)
+            shadow_distance: Cast shadow distance in pixels
+            shadow_opacity: Shadow darkness (0–1); cast uses opacity*0.9, contact uses opacity*1.4
+            contact_height_ratio: Height of contact shadow as fraction of overlay height (default 0.15)
+            contact_blur: Gaussian blur radius for contact shadow (default 8)
+            ao_intensity: Ambient occlusion intensity (default 0.4)
+            ao_blur: Gaussian blur radius for AO layer (default 30)
+        
+        Returns:
+            Path to the new image with shadow effect
+        """
+        try:
+            logger.info(f"🖼️  Adding PIL shadow to image (cast+contact+AO): {image_path}")
+            
+            overlay = Image.open(image_path).convert("RGBA")
+            alpha = overlay.split()[3]
+            
+            # If offset is provided and non-zero, derive angle and distance for cast shadow
+            use_angle = shadow_angle
+            use_distance = shadow_distance
+            if offset and (offset[0] != 0 or offset[1] != 0):
+                use_angle = math.degrees(math.atan2(offset[1], offset[0]))
+                use_distance = math.hypot(offset[0], offset[1])
+            
+            cast_blur = min(45, max(blur_radius, 20))
+            pad = int(cast_blur + abs(use_distance) + 20)
+            canvas_w = overlay.width + 2 * pad
+            canvas_h = overlay.height + 2 * pad
+            result = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            pos_x, pos_y = pad, pad
+
+            # 1. Directional cast shadow (same as compositing step 6.5)
+            cast_shadow, shadow_offset = self._create_cast_shadow(
+                overlay,
+                angle=use_angle,
+                distance=use_distance,
+                opacity=shadow_opacity * 0.9,
+                blur=cast_blur,
+            )
+            cast_shadow_pos = (pos_x + shadow_offset[0] - cast_blur, pos_y + shadow_offset[1] - cast_blur)
+            if cast_shadow_pos[0] + cast_shadow.width > 0 and cast_shadow_pos[1] + cast_shadow.height > 0:
+                result.paste(cast_shadow, cast_shadow_pos, cast_shadow)
+
+            # 2. Contact shadow under the object (same as compositing step 7)
+            contact_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
+            contact_shadow.putalpha(alpha)
+            new_h = int(overlay.height * contact_height_ratio)
+            contact_shadow = contact_shadow.resize((overlay.width, new_h), Image.Resampling.LANCZOS)
+            contact_shadow = contact_shadow.filter(ImageFilter.GaussianBlur(contact_blur))
+            shadow_alpha = contact_shadow.split()[3]
+            shadow_alpha = ImageEnhance.Brightness(shadow_alpha).enhance(shadow_opacity * 1.4)
+            contact_shadow.putalpha(shadow_alpha)
+            contact_position = (pos_x, pos_y + overlay.height - contact_shadow.height)
+            result.paste(contact_shadow, contact_position, contact_shadow)
+
+            # 3. Improved ambient occlusion (same as compositing step 7.5)
+            ao = self._create_improved_ao(overlay, intensity=ao_intensity)
+            ao_position = (pos_x, pos_y + int(overlay.height * 0.4))
+            ao_resized = ao.resize((overlay.width, int(overlay.height * 0.6)), Image.Resampling.LANCZOS)
+            ao_resized = ao_resized.filter(ImageFilter.GaussianBlur(ao_blur))
+            result.paste(ao_resized, ao_position, ao_resized)
+
+            # 4. Product on top
+            result.paste(overlay, (pos_x, pos_y), overlay)
+
+            base, ext = os.path.splitext(image_path)
+            output_path = f"{base}_with_shadow{ext}"
+            result.save(output_path, "PNG")
+            logger.info(f"✅ PIL shadow image saved (cast+contact+AO): {output_path}")
+            
+            return output_path
+            
+        except Exception as e:
+            logger.error(f"❌ Error adding PIL shadow to image: {str(e)}", exc_info=True)
+            # If shadow addition fails, return the original image path
+            return image_path
+
+    def _extract_alpha_pil(self, image):
+        """Extract the alpha channel from a PIL image."""
+        return image.split()[-1]
+
+    def _create_shadow_from_alpha_pil(self, alpha, blur_radius, shadow_color=(0, 0, 0)):
+        """Create a shadow based on a blurred version of the alpha channel."""
+        alpha_blur = alpha.filter(ImageFilter.BoxBlur(blur_radius))
+        shadow = Image.new("RGBA", alpha_blur.size, (*shadow_color, 0))
+        shadow.putalpha(alpha_blur)
+        return shadow
 
     def _download_video_from_url(self, video_url: str) -> str:
         """

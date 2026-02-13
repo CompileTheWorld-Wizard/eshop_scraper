@@ -488,7 +488,7 @@ Return a SINGLE, COHESIVE PARAGRAPH of 150-200 words. Structure:
 Use cinematic, professional photography terminology ONLY.
 NO lists, bullet points, or markdown.
 NO product names, product shapes, or product-like objects.
-NO human figures, mannequins, or animal subjects.
+NO human figures, mannequins, products, or animal subjects.
 NO food, beverages, or edible props.
 NO electronic screens displaying content.
 NO text, logos, or branding elements.
@@ -529,6 +529,83 @@ GENERATE UNIVERSAL PRODUCT BACKDROP DESCRIPTION NOW:"""
                 "for placing a product later while providing visual interest and context through lighting, textures, "
                 "and environmental elements."
             )
+
+    def extract_background_prompt(
+        self,
+        product_description: str,
+        mood: Optional[str] = None,
+        style: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Call OpenAI to extract the background-generation prompt from a product description.
+        Returns the prompt string that would be sent to Vertex for background generation.
+        Use this when the next server sends only the product description and you need the prompt.
+
+        Args:
+            product_description: Description of the product (from next server request).
+            mood: Optional mood/feeling for the background.
+            style: Optional visual style.
+            environment: Optional environment setting.
+
+        Returns:
+            {"prompt": str, "error": str | None}
+        """
+        if not self.openai_client:
+            return {"prompt": "", "error": "OpenAI client not initialized"}
+        try:
+            env_parts = []
+            if mood:
+                env_parts.append(f"Mood: {mood}")
+            if style:
+                env_parts.append(f"Style: {style}")
+            if environment:
+                env_parts.append(f"Environment: {environment}")
+            context_block = "\n".join(env_parts) if env_parts else ""
+
+            user_content = (
+                "You are a professional commercial product scene designer.\n\n"
+                "Your task is to generate a high-quality background image generation prompt for a product.\n\n"
+                "The image will be used as a background only.\n"
+                "The product itself will be added later in post-processing.\n"
+                "Do NOT include the product in the scene.\n\n"
+                "OBJECTIVE:\n"
+                "Create a visually appealing, realistic, high-end background that enhances the product's perceived value.\n\n"
+                "REQUIREMENTS:\n"
+                "- The center of the image must remain clean and not cluttered (reserved space for product placement).\n"
+                "- No text, logos, watermarks, or typography.\n"
+                "- No main subject in the center.\n"
+                "- Background must match the product's mood, category, and positioning.\n"
+                "- Use cinematic lighting description.\n"
+                "- Describe environment, materials, atmosphere, depth, and lens style.\n"
+                "- Must feel professional, commercial-grade, photorealistic.\n\n"
+                "STYLE:\n"
+                "- High resolution\n"
+                "- Depth of field\n"
+                "- Professional product photography lighting\n"
+                "- Balanced composition\n"
+                "- Natural shadows\n"
+                "- Realistic textures\n\n"
+                "OUTPUT FORMAT:\n"
+                "Return ONLY the final image generation prompt.\n"
+                "Do not explain anything.\n"
+                "Do not add extra commentary.\n\n"
+                "PRODUCT DESCRIPTION:\n"
+                f"{product_description}\n"
+            )
+            if context_block:
+                user_content += f"\nADDITIONAL CONTEXT:\n{context_block}\n"
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": user_content}],
+                max_tokens=500,
+            )
+            prompt = (response.choices[0].message.content or "").strip()
+            return {"prompt": prompt, "error": None}
+        except Exception as e:
+            logger.exception("extract_background_prompt failed")
+            return {"prompt": "", "error": str(e)}
 
     def _generate_background_with_vertex(self, background_prompt: str) -> Optional[str]:
         """

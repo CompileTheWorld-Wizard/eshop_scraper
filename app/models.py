@@ -431,6 +431,21 @@ class BackgroundGenerationRequest(BaseModel):
     short_id: Optional[str] = Field(None, description="Short ID")
 
 
+class ExtractBackgroundPromptRequest(BaseModel):
+    """Request to extract the background prompt from a product description (OpenAI → prompt for Vertex)"""
+    product_description: str = Field(..., description="Product description from next server")
+    mood: Optional[str] = Field(None, description="Optional mood for the background")
+    style: Optional[str] = Field(None, description="Optional visual style")
+    environment: Optional[str] = Field(None, description="Optional environment setting")
+
+
+class ExtractBackgroundPromptResponse(BaseModel):
+    """Response with the extracted prompt usable for Vertex background generation"""
+    success: bool = Field(..., description="Whether extraction succeeded")
+    prompt: str = Field("", description="The background prompt for Vertex")
+    error: Optional[str] = Field(None, description="Error message if failed")
+
+
 class BackgroundGenerationResponse(BaseModel):
     """Response format for background generation (async pattern)"""
     success: bool = Field(..., description="Whether the operation succeeded")
