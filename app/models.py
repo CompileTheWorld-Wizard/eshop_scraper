@@ -257,10 +257,28 @@ class TestAudioResponse(BaseModel):
 
 
 # Audio Generation Models
+class AudioScriptGenerationRequest(BaseModel):
+    """Request for generating an audio script only (user can edit before generating audio)."""
+    voice_id: str = Field(..., description="ElevenLabs voice ID (used for WPM calibration)")
+    user_id: str = Field(..., description="User ID associated with the request")
+    short_id: str = Field(..., description="Short ID to generate script for")
+
+
+class AudioScriptGenerationResponse(BaseModel):
+    """Response containing the generated script for user review/edit before audio generation."""
+    short_id: str = Field(..., description="Short ID the script was generated for")
+    script: str = Field(..., description="Generated audio script (user can edit before calling generate-audio)")
+    words_per_minute: float = Field(..., description="Detected words per minute for this voice")
+    target_duration_seconds: int = Field(..., description="Target duration in seconds used for script length")
+    message: str = Field("Script generated successfully", description="Status message")
+
+
 class AudioGenerationRequest(BaseModel):
+    """Request for generating audio from a confirmed script (script is required; get it from /generate-audio-script)."""
     voice_id: str = Field(..., description="ElevenLabs voice ID for audio generation")
     user_id: str = Field(..., description="User ID associated with the request")
     short_id: str = Field(..., description="Short ID to generate audio for")
+    script: str = Field(..., description="Audio script to speak (from generate-audio-script, possibly edited by user)")
 
 
 class AudioGenerationResponse(BaseModel):

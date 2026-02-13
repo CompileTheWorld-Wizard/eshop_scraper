@@ -13,7 +13,9 @@ from app.models import (
     TaskStatus, TaskPriority, VideoGenerationRequest, VideoGenerationResponse,
     FinalizeShortRequest, FinalizeShortResponse, ImageAnalysisRequest, ImageAnalysisResponse,
     ScenarioGenerationRequest, ScenarioGenerationResponse, SaveScenarioRequest, SaveScenarioResponse,
-    TestAudioRequest, TestAudioResponse, AudioGenerationRequest, AudioGenerationResponse,
+    TestAudioRequest, TestAudioResponse,
+    AudioScriptGenerationRequest, AudioScriptGenerationResponse,
+    AudioGenerationRequest, AudioGenerationResponse,
     ImageCompositeRequest, ImageCompositeResponse, GenerateScene1RequestFromNextJS, 
     GenerateScene1Request, GenerateScene1Response, Scene1Metadata, Scene1ProductInfo,
     MergeImageWithVideoRequest, MergeImageWithVideoResponse, ShadowGenerationRequest, ShadowGenerationResponse,
@@ -1632,6 +1634,34 @@ def get_test_audio(
         raise HTTPException(status_code=500, detail=f"Test audio request failed: {str(e)}")
 
 
+@router.post("/generate-audio-script", response_model=AudioScriptGenerationResponse)
+def generate_audio_script(
+    request: AudioScriptGenerationRequest,
+    http_request: Request = None,
+    api_key: Optional[str] = Depends(get_api_key)
+) -> AudioScriptGenerationResponse:
+    """
+    Generate an audio script only (no audio). User can review/edit the script, then call POST /generate-audio with the script.
+    
+    This endpoint:
+    1. Gets or generates test audio and analyzes words-per-minute for the voice
+    2. Fetches short title/description from the database
+    3. Generates a promotional script using OpenAI (hook, main, CTA)
+    
+    Returns the script so the Next server can show it to the user for editing. After user confirms, call POST /generate-audio with the (possibly edited) script.
+    
+    No credits are deducted for script generation; credits are deducted when generating audio.
+    """
+    try:
+        logger.info(f"Generating audio script for short {request.short_id} with voice {request.voice_id} by user {request.user_id}")
+        result = audio_generation_service.generate_audio_script(request)
+        logger.info(f"Successfully generated script for short {request.short_id}")
+        return result
+    except Exception as e:
+        logger.error(f"Error in audio script generation endpoint: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Audio script generation failed: {str(e)}")
+
+
 @router.post("/generate-audio", response_model=AudioGenerationResponse)
 def generate_audio(
     request: AudioGenerationRequest,
@@ -1639,18 +1669,17 @@ def generate_audio(
     api_key: Optional[str] = Depends(get_api_key)
 ) -> AudioGenerationResponse:
     """
-    Generate audio for a specific scenario using AI-powered script generation.
+    Generate audio from a provided script (script is required).
     
-    This endpoint generates audio content for a video scenario by:
-    1. Checking for existing test audio or generating it
-    2. Analyzing the audio speed (words per minute)
-    3. Generating an appropriate script using OpenAI
-    4. Creating the final audio using ElevenLabs
+    Call this after the user has confirmed the script (from POST /generate-audio-script, possibly edited).
+    This endpoint:
+    1. Gets test audio and WPM for metadata
+    2. Generates final audio using ElevenLabs from the script sent by the Next server
+    3. Uploads to storage, deducts credits, saves to audio_info
     
-    Returns the audio generation result directly.
+    Request must include the script field (the confirmed/edited script from the client).
     
     Authentication: Optional API key via Bearer token
-    Rate Limits: Based on API key configuration
     """
     try:
         # Security validation - DISABLED FOR DEVELOPMENT
@@ -1689,7 +1718,16 @@ def generate_audio(
         raise
     except Exception as e:
         logger.error(f"Error in audio generation endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Audio generation failed: {str(e)}")
+        msg = str(e)
+        if "payment" in msg.lower() and ("ElevenLabs" in msg or "invoice" in msg.lower()):
+            raise HTTPException(
+                status_code=402,
+                detail={
+                    "error": "elevenlabs_payment_required",
+                    "message": "ElevenLabs subscription has a failed or incomplete payment. Complete the latest invoice at ElevenLabs to continue.",
+                },
+            )
+        raise HTTPException(status_code=500, detail=f"Audio generation failed: {msg}")
 
 
 # ============================================================================

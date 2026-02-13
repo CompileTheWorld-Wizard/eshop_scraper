@@ -15,7 +15,10 @@ from datetime import datetime, timezone
 from elevenlabs import ElevenLabs
 
 from app.models import (
-    AudioGenerationRequest, AudioGenerationResponse
+    AudioGenerationRequest,
+    AudioGenerationResponse,
+    AudioScriptGenerationRequest,
+    AudioScriptGenerationResponse,
 )
 from app.utils.mongodb_manager import mongodb_manager
 from app.utils.supabase_utils import supabase_manager
@@ -72,51 +75,41 @@ class AudioGenerationService:
             self.openai_client = None
             self.elevenlabs_client = None
 
-    def generate_audio(self, request: AudioGenerationRequest) -> AudioGenerationResponse:
-        """Generate audio synchronously and return the result directly"""
+    def generate_audio_script(self, request: AudioScriptGenerationRequest) -> AudioScriptGenerationResponse:
+        """Generate audio script only using OpenAI. User can review/edit before calling generate_audio."""
         try:
-            if not self.openai_client or not self.elevenlabs_client:
-                raise Exception("Required clients not initialized")
+            if not self.openai_client:
+                raise Exception("OpenAI client not initialized")
 
-            logger.info(f"Starting audio generation for short {request.short_id} with voice {request.voice_id} by user {request.user_id}")
-            
+            logger.info(f"Generating audio script for short {request.short_id} with voice {request.voice_id} by user {request.user_id}")
+
             # Step 1: Get target language from shorts table
-            logger.info("Getting target language from shorts table...")
             target_language = asyncio.run(self._get_target_language(request.short_id))
             if not target_language:
                 logger.warning(f"Could not fetch target_language for short_id {request.short_id}, defaulting to en-US")
                 target_language = "en-US"
-            
+
             # Step 2: Get or generate test audio and calculate speed
-            logger.info("Getting test audio and analyzing speed...")
             test_audio_result = asyncio.run(self._get_or_generate_test_audio(request.voice_id, request.user_id, target_language))
             if not test_audio_result:
                 raise Exception("Failed to get or generate test audio")
-            
+
             words_per_minute = asyncio.run(self._analyze_audio_speed(test_audio_result["url"]))
             if not words_per_minute:
-                logger.warning("Failed to analyze audio speed, using default")
-                words_per_minute = 150.0  # Default WPM
-            
-            # Calculate test audio duration
+                words_per_minute = 150.0
+
             test_audio_duration = asyncio.run(self._calculate_audio_duration(test_audio_result["url"]))
             test_text = test_audio_result.get("text", "")
 
-            # Step 2: Get short description from database and use default settings
+            # Step 3: Get short description
             short_info = asyncio.run(self._get_short_description(request.short_id))
             if not short_info:
-                raise Exception(f"No short found for short_id: {request.short_id}. Please ensure the short exists in the database.")
-            
-            # Default values for audio generation
-            total_duration = 24  # Default: 24 seconds
-            style = 'trendy-influencer-vlog'  # Default style
-            mood = 'energetic'  # Default mood
-            
-            # Log target duration
-            logger.info(f"Using default settings - Duration: {total_duration}s, Style: {style}, Mood: {mood}")
+                raise Exception(f"No short found for short_id: {request.short_id}")
 
-            # Step 3: Generate audio script using OpenAI
-            logger.info("Generating audio script...")
+            total_duration = 24
+            style = "trendy-influencer-vlog"
+            mood = "energetic"
+
             audio_script = asyncio.run(self._generate_audio_script(
                 total_duration=total_duration,
                 style=style,
@@ -124,13 +117,49 @@ class AudioGenerationService:
                 words_per_minute=words_per_minute,
                 test_text=test_text,
                 test_audio_duration=test_audio_duration,
-                short_info=short_info
+                short_info=short_info,
             ))
             if not audio_script:
                 raise Exception("Failed to generate audio script")
 
-            # Step 4: Generate final audio using ElevenLabs
-            logger.info("Generating final audio...")
+            return AudioScriptGenerationResponse(
+                short_id=request.short_id,
+                script=audio_script,
+                words_per_minute=words_per_minute,
+                target_duration_seconds=total_duration,
+                message="Script generated successfully. Edit if needed, then call POST /generate-audio with this script.",
+            )
+        except Exception as e:
+            logger.error(f"Audio script generation failed: {e}")
+            raise Exception(f"Audio script generation failed: {str(e)}")
+
+    def generate_audio(self, request: AudioGenerationRequest) -> AudioGenerationResponse:
+        """Generate audio from the provided script (script comes from Next server; user may have edited it)."""
+        try:
+            if not self.elevenlabs_client:
+                raise Exception("ElevenLabs client not initialized")
+
+            logger.info(f"Starting audio generation for short {request.short_id} with voice {request.voice_id} by user {request.user_id}")
+            audio_script = request.script
+
+            # Step 1: Get target language (for test audio if needed)
+            target_language = asyncio.run(self._get_target_language(request.short_id))
+            if not target_language:
+                target_language = "en-US"
+
+            # Step 2: Get or generate test audio and calculate speed (for metadata and duration validation)
+            test_audio_result = asyncio.run(self._get_or_generate_test_audio(request.voice_id, request.user_id, target_language))
+            if not test_audio_result:
+                raise Exception("Failed to get or generate test audio")
+
+            words_per_minute = asyncio.run(self._analyze_audio_speed(test_audio_result["url"]))
+            if not words_per_minute:
+                words_per_minute = 150.0
+
+            total_duration = 24  # Used for validation logging
+
+            # Step 3: Generate final audio using ElevenLabs from the provided script
+            logger.info("Generating final audio from provided script...")
             final_audio_result = asyncio.run(self._generate_final_audio_with_info(request.voice_id, audio_script, request.user_id))
             if not final_audio_result:
                 raise Exception("Failed to generate final audio")
@@ -195,6 +224,12 @@ class AudioGenerationService:
 
         except Exception as e:
             logger.error(f"Audio generation failed: {e}")
+            err_str = str(e).lower()
+            if "payment_issue" in err_str or "incomplete payment" in err_str or ("401" in err_str and "invoice" in err_str):
+                raise Exception(
+                    "ElevenLabs subscription has a failed or incomplete payment. "
+                    "Complete the latest invoice at ElevenLabs to continue usage."
+                )
             raise Exception(f"Audio generation failed: {str(e)}")
 
     async def _get_target_language(self, short_id: str) -> Optional[str]:
@@ -558,7 +593,7 @@ Description: {short_description}"""
 
         except Exception as e:
             logger.error(f"Error generating final audio: {e}")
-            return None
+            raise  # Propagate so caller can return a clear message (e.g. payment_issue)
 
     def _generate_srt_content(self, subtitle_timing: List[Dict[str, Any]]) -> str:
         """Generate SRT format content from subtitle timing segments"""

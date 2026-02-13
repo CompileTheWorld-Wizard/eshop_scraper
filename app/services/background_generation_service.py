@@ -556,7 +556,7 @@ GENERATE UNIVERSAL PRODUCT BACKDROP DESCRIPTION NOW:"""
         try:
             env_parts = []
             if mood:
-                env_parts.append(f"Mood: {mood}")
+                env_parts.append(f"Mood: {mood}")   
             if style:
                 env_parts.append(f"Style: {style}")
             if environment:
