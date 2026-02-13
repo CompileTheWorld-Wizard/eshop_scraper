@@ -186,6 +186,273 @@ class ImageProcessingService:
         except Exception as e:
             raise Exception(f"Failed to call Remove.bg API: {str(e)}")
 
+    def _match_color_temperature(self, overlay, background):
+        """
+        🎯 NEW FEATURE: Color Temperature Matching
+        Adjusts overlay to match background lighting (warm/cool)
+        """
+        # Convert to numpy for analysis
+        bg_array = np.array(background.convert("RGB"))
+        overlay_array = np.array(overlay.convert("RGBA"))
+        
+        # Calculate average color of background
+        avg_color = np.mean(bg_array.reshape(-1, 3), axis=0)
+        
+        # Determine temperature (B/R ratio)
+        blue_red_ratio = avg_color[2] / (avg_color[0] + 1)  # R/B in PIL
+        
+        # Extract RGB and alpha
+        r, g, b, a = overlay.split()
+        r_arr = np.array(r, dtype=float)
+        g_arr = np.array(g, dtype=float)
+        b_arr = np.array(b, dtype=float)
+        
+        if blue_red_ratio < 0.9:  # Warm (more red)
+            r_arr *= 1.12
+            g_arr *= 1.05
+            b_arr *= 0.92
+        elif blue_red_ratio > 1.1:  # Cool (more blue)
+            r_arr *= 0.92
+            g_arr *= 1.05
+            b_arr *= 1.12
+        # else: neutral, no adjustment
+        
+        # Clip and convert back
+        r = Image.fromarray(np.clip(r_arr, 0, 255).astype(np.uint8))
+        g = Image.fromarray(np.clip(g_arr, 0, 255).astype(np.uint8))
+        b = Image.fromarray(np.clip(b_arr, 0, 255).astype(np.uint8))
+        
+        return Image.merge("RGBA", (r, g, b, a))
+    
+    
+    def _match_histogram(self, overlay, background, strength=0.5):
+        """
+        🎯 NEW FEATURE: Histogram Matching
+        Makes overlay colors blend naturally with background
+        """
+        bg_array = np.array(background.convert("RGB"))
+        overlay_array = np.array(overlay.convert("RGBA"))
+        
+        # Extract alpha
+        alpha = overlay_array[:, :, 3]
+        
+        # Match each RGB channel
+        for channel in range(3):
+            # Get histograms
+            bg_hist, _ = np.histogram(bg_array[:, :, channel].flatten(), 256, [0, 256])
+            overlay_hist, _ = np.histogram(overlay_array[:, :, channel].flatten(), 256, [0, 256])
+            
+            # Calculate CDFs
+            bg_cdf = bg_hist.cumsum()
+            bg_cdf = bg_cdf / bg_cdf[-1]
+            
+            overlay_cdf = overlay_hist.cumsum()
+            overlay_cdf = overlay_cdf / (overlay_cdf[-1] + 1e-7)
+            
+            # Create lookup table
+            lookup = np.interp(overlay_cdf, bg_cdf, np.arange(256))
+            
+            # Apply lookup
+            matched = np.interp(
+                overlay_array[:, :, channel].flatten(),
+                np.arange(256),
+                lookup
+            ).reshape(overlay_array[:, :, channel].shape)
+            
+            # Blend with original based on strength
+            original = overlay_array[:, :, channel].astype(float)
+            overlay_array[:, :, channel] = (
+                strength * matched + (1 - strength) * original
+            ).astype(np.uint8)
+        
+        # Restore alpha
+        overlay_array[:, :, 3] = alpha
+        
+        return Image.fromarray(overlay_array, "RGBA")
+    
+    
+    def _adjust_brightness_contrast(self, overlay, brightness=1.0, contrast=1.0):
+        """
+        🎯 NEW FEATURE: Brightness/Contrast Matching
+        Adjusts overlay exposure to match background
+        """
+        r, g, b, a = overlay.split()
+        
+        # Apply brightness
+        if brightness != 1.0:
+            r = ImageEnhance.Brightness(r).enhance(brightness)
+            g = ImageEnhance.Brightness(g).enhance(brightness)
+            b = ImageEnhance.Brightness(b).enhance(brightness)
+        
+        # Apply contrast
+        if contrast != 1.0:
+            r = ImageEnhance.Contrast(r).enhance(contrast)
+            g = ImageEnhance.Contrast(g).enhance(contrast)
+            b = ImageEnhance.Contrast(b).enhance(contrast)
+        
+        return Image.merge("RGBA", (r, g, b, a))
+    
+    
+    def _create_cast_shadow(self, overlay, angle=135, distance=30, opacity=0.35, blur=40):
+        """
+        🎯 NEW FEATURE: Directional Cast Shadow with Perspective
+        Creates realistic angled shadow matching light direction
+        
+        Args:
+            angle: Shadow direction in degrees (0=right, 90=down, 180=left, 270=up)
+            distance: Shadow distance in pixels
+            opacity: Shadow darkness (0-1)
+            blur: Shadow blur radius
+        """
+        # Extract alpha channel as shadow base
+        alpha = overlay.split()[3]
+        
+        # Calculate shadow offset
+        angle_rad = math.radians(angle)
+        offset_x = int(distance * math.cos(angle_rad))
+        offset_y = int(distance * math.sin(angle_rad))
+        
+        # Create larger canvas for shadow
+        canvas_w = overlay.width + abs(offset_x) + blur * 2
+        canvas_h = overlay.height + abs(offset_y) + blur * 2
+        
+        # Create shadow canvas
+        shadow = Image.new("L", (canvas_w, canvas_h), 0)
+        
+        # Paste alpha as shadow
+        paste_x = blur + max(0, offset_x)
+        paste_y = blur + max(0, offset_y)
+        shadow.paste(alpha, (paste_x, paste_y))
+        
+        # Apply perspective distortion (shadow stretches away from light)
+        shadow_array = np.array(shadow, dtype=np.uint8)
+        h, w = shadow_array.shape
+        
+        # Simple perspective: stretch bottom if light from top
+        if 45 < angle < 135:  # Light from top-right to top-left
+            # Stretch bottom horizontally
+            perspective_factor = 0.2
+            for y in range(h):
+                progress = y / h
+                stretch = int(w * perspective_factor * progress)
+                if stretch > 0:
+                    row = shadow_array[y, :]
+                    stretched = np.interp(
+                        np.linspace(0, len(row), len(row) + stretch),
+                        np.arange(len(row)),
+                        row
+                    )
+                    # Center the stretched row
+                    start = stretch // 2
+                    shadow_array[y, :] = stretched[start:start + w]
+        
+        shadow = Image.fromarray(shadow_array, "L")
+        
+        # Apply blur for soft edges
+        shadow = shadow.filter(ImageFilter.GaussianBlur(blur))
+        
+        # Apply opacity
+        shadow_array = np.array(shadow, dtype=float)
+        shadow_array = (shadow_array * opacity).astype(np.uint8)
+        shadow = Image.fromarray(shadow_array, "L")
+        
+        # Convert to RGBA
+        shadow_rgba = Image.new("RGBA", shadow.size, (0, 0, 0, 255))
+        shadow_rgba.putalpha(shadow)
+        
+        return shadow_rgba, (offset_x, offset_y)
+    
+    def _add_rim_light(self, overlay, light_angle=135, intensity=0.25, thickness=4):
+        """
+        🎯 Rim Lighting (Edge Highlights) - NO SCIPY REQUIRED
+        Adds subtle bright edge on lit side of product
+        Uses PIL's built-in edge detection
+        
+        Args:
+            light_angle: Direction light comes from (degrees)
+            intensity: Edge brightness (0-1)
+            thickness: Edge thickness in pixels
+        """
+        try:
+            # Extract alpha for edge detection
+            alpha = overlay.split()[3]
+            
+            # Use PIL's FIND_EDGES filter (fast and built-in!)
+            edges = alpha.filter(ImageFilter.FIND_EDGES)
+            
+            # Dilate edges using blur instead of MaxFilter (more compatible)
+            if thickness > 1:
+                # Multiple blur passes to expand edges
+                for _ in range(thickness):
+                    edges = edges.filter(ImageFilter.BLUR)
+            
+            edges_array = np.array(edges, dtype=float) / 255.0
+            
+            # Calculate which edges should be lit based on angle
+            h, w = edges_array.shape
+            y_grad, x_grad = np.mgrid[0:h, 0:w]
+            
+            # Normalize to -1 to 1
+            x_grad = (x_grad / w) * 2 - 1
+            y_grad = (y_grad / h) * 2 - 1
+            
+            # Calculate edge brightness based on light angle
+            angle_rad = math.radians(light_angle)
+            edge_brightness = (
+                x_grad * math.cos(angle_rad) + 
+                y_grad * math.sin(angle_rad)
+            )
+            edge_brightness = np.clip(edge_brightness, 0, 1)
+            
+            # Combine edge detection with directional brightness
+            rim_mask = edges_array * edge_brightness * intensity
+            
+            # Apply rim light to RGB channels
+            r, g, b, a = overlay.split()
+            r_arr = np.array(r, dtype=float)
+            g_arr = np.array(g, dtype=float)
+            b_arr = np.array(b, dtype=float)
+            
+            # Brighten edges
+            r_arr = np.clip(r_arr + rim_mask * 255, 0, 255)
+            g_arr = np.clip(g_arr + rim_mask * 255, 0, 255)
+            b_arr = np.clip(b_arr + rim_mask * 255, 0, 255)
+            
+            r = Image.fromarray(r_arr.astype(np.uint8))
+            g = Image.fromarray(g_arr.astype(np.uint8))
+            b = Image.fromarray(b_arr.astype(np.uint8))
+            
+            return Image.merge("RGBA", (r, g, b, a))
+            
+        except Exception as e:
+            # If rim lighting fails, just return original overlay
+            logger.warning(f"Rim lighting skipped: {e}")
+            return overlay
+
+    def _create_improved_ao(self, overlay, intensity=0.4):
+        """
+        🎯 IMPROVED: Better Ambient Occlusion with Gradient
+        Creates darker shadow at base, fading upward
+        """
+        alpha = overlay.split()[3]
+        
+        # Create vertical gradient (darker at bottom)
+        h, w = overlay.size[1], overlay.size[0]
+        gradient = np.linspace(1, 0, h) ** 2  # Quadratic falloff
+        gradient = np.tile(gradient.reshape(-1, 1), (1, w))
+        
+        # Apply to alpha channel
+        alpha_array = np.array(alpha, dtype=float) / 255.0
+        ao_mask = alpha_array * gradient * intensity
+        
+        # Create AO layer
+        ao = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
+        ao_alpha = (ao_mask * 255).astype(np.uint8)
+        ao.putalpha(Image.fromarray(ao_alpha))
+        
+        return ao
+
+
     def composite_images(
         self,
         background_url: str,
@@ -229,10 +496,17 @@ class ImageProcessingService:
             # Composite the images
             logger.info("Compositing images...")
             temp_output_path = self._composite_images_locally(
-                temp_bg_path,
-                temp_overlay_path,
-                position,
-                resize_overlay
+                background_path=temp_bg_path,
+                overlay_path=temp_overlay_path,
+                position=position,
+                resize_overlay=resize_overlay,
+                shadow_angle=135,
+                shadow_distance=30,
+                enable_color_matching=True,
+                enable_histogram_matching=True,
+                enable_rim_light=True,
+                brightness_adjust=1.0,
+                contrast_adjust=1.05,
             )
 
             # Upload to Supabase storage
@@ -290,8 +564,20 @@ class ImageProcessingService:
         resize_overlay=True,
         landscape_width=1920,
         landscape_height=1080,
-        add_reflection=True
+        add_reflection=True,
+        # 🆕 NEW PARAMETERS
+        shadow_angle=135,  # Light direction (135 = top-left, 45 = top-right)
+        shadow_distance=30,  # How far shadow extends
+        enable_color_matching=True,  # Match colors to background
+        enable_histogram_matching=True,  # Blend color distributions
+        enable_rim_light=True,  # Add edge highlights
+        brightness_adjust=1.0,  # Brightness multiplier
+        contrast_adjust=1.05,  # Contrast multiplier
     ) -> str:
+        """
+        ENHANCED compositing with all professional features
+        """
+        
         # -----------------------------
         # 1️⃣ Load images
         # -----------------------------
@@ -305,11 +591,9 @@ class ImageProcessingService:
         target_ratio = landscape_width / landscape_height
 
         if bg_ratio > target_ratio:
-            # background too wide → crop sides
             new_height = landscape_height
             new_width = int(bg_ratio * new_height)
         else:
-            # background too tall → crop top/bottom
             new_width = landscape_width
             new_height = int(new_width / bg_ratio)
 
@@ -336,11 +620,42 @@ class ImageProcessingService:
             )
 
         # -----------------------------
+        # 🆕 3.5️⃣ COLOR & LIGHTING MATCHING
+        # -----------------------------
+        if enable_color_matching:
+            print("🎨 Matching color temperature...")
+            overlay = self._match_color_temperature(overlay, background)
+        
+        if enable_histogram_matching:
+            print("🎨 Matching histogram...")
+            overlay = self._match_histogram(overlay, background, strength=0.5)
+        
+        if brightness_adjust != 1.0 or contrast_adjust != 1.0:
+            print(f"💡 Adjusting brightness ({brightness_adjust}) & contrast ({contrast_adjust})...")
+            overlay = self._adjust_brightness_contrast(
+                overlay, 
+                brightness=brightness_adjust, 
+                contrast=contrast_adjust
+            )
+
+        # -----------------------------
         # 4️⃣ Smooth overlay edges
         # -----------------------------
         r, g, b, a = overlay.split()
-        a = a.filter(ImageFilter.GaussianBlur(2))  # slightly more than 1
+        a = a.filter(ImageFilter.GaussianBlur(2))
         overlay = Image.merge("RGBA", (r, g, b, a))
+
+        # -----------------------------
+        # 🆕 4.5️⃣ ADD RIM LIGHTING
+        # -----------------------------
+        if enable_rim_light:
+            print("✨ Adding rim lighting...")
+            overlay = self._add_rim_light(
+                overlay, 
+                light_angle=shadow_angle - 180,  # Opposite of shadow
+                intensity=0.25,
+                thickness=4
+            )
 
         # -----------------------------
         # 5️⃣ Determine shadow opacity based on background brightness
@@ -368,11 +683,34 @@ class ImageProcessingService:
         alpha = overlay.split()[3]
 
         # -----------------------------
+        # 🆕 6.5️⃣ DIRECTIONAL CAST SHADOW
+        # -----------------------------
+        print(f"🌑 Creating cast shadow (angle: {shadow_angle}°, distance: {shadow_distance}px)...")
+        cast_shadow, shadow_offset = self._create_cast_shadow(
+            overlay,
+            angle=shadow_angle,
+            distance=shadow_distance,
+            opacity=shadow_opacity * 0.9,
+            blur=45
+        )
+        
+        # Position cast shadow
+        cast_shadow_pos = (
+            position[0] + shadow_offset[0] - 45,  # Account for blur padding
+            position[1] + shadow_offset[1] - 45
+        )
+        
+        # Composite cast shadow (only if within bounds)
+        if cast_shadow_pos[0] + cast_shadow.width > 0 and cast_shadow_pos[1] + cast_shadow.height > 0:
+            composited.paste(cast_shadow, cast_shadow_pos, cast_shadow)
+
+        # -----------------------------
         # 7️⃣ Contact shadow (under the object)
         # -----------------------------
+        print("🌑 Creating contact shadow...")
         contact_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
         contact_shadow.putalpha(alpha)
-        new_h = int(overlay.height * 0.15)  # small contact shadow height
+        new_h = int(overlay.height * 0.15)
         contact_shadow = contact_shadow.resize((overlay.width, new_h), Image.Resampling.LANCZOS)
         contact_shadow = contact_shadow.filter(ImageFilter.GaussianBlur(8))
         shadow_alpha = contact_shadow.split()[3]
@@ -382,26 +720,23 @@ class ImageProcessingService:
         composited.paste(contact_shadow, contact_position, contact_shadow)
 
         # -----------------------------
-        # 8️⃣ Soft ambient shadow
+        # 🆕 7.5️⃣ IMPROVED AMBIENT OCCLUSION
         # -----------------------------
-        soft_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
-        soft_shadow.putalpha(alpha)
-        soft_h = int(overlay.height * 0.6)
-        soft_shadow = soft_shadow.resize((overlay.width, soft_h), Image.Resampling.LANCZOS)
-        soft_shadow = soft_shadow.filter(ImageFilter.GaussianBlur(30))
-        soft_alpha = soft_shadow.split()[3]
-        soft_alpha = ImageEnhance.Brightness(soft_alpha).enhance(shadow_opacity)
-        soft_shadow.putalpha(soft_alpha)
-        soft_position = (position[0], position[1] + overlay.height - int(overlay.height * 0.3))
-        composited.paste(soft_shadow, soft_position, soft_shadow)
+        print("🌑 Adding ambient occlusion...")
+        ao = self._create_improved_ao(overlay, intensity=0.4)
+        ao_position = (position[0], position[1] + int(overlay.height * 0.4))
+        ao_resized = ao.resize((overlay.width, int(overlay.height * 0.6)), Image.Resampling.LANCZOS)
+        ao_resized = ao_resized.filter(ImageFilter.GaussianBlur(30))
+        composited.paste(ao_resized, ao_position, ao_resized)
 
         # -----------------------------
         # 9️⃣ Optional reflection
         # -----------------------------
         if add_reflection:
+            print("✨ Adding reflection...")
             reflection = overlay.copy().transpose(Image.FLIP_TOP_BOTTOM)
             r, g, b, a = reflection.split()
-            a = ImageEnhance.Brightness(a).enhance(0.15)  # low opacity reflection
+            a = ImageEnhance.Brightness(a).enhance(0.15)
             a = a.filter(ImageFilter.GaussianBlur(5))
             reflection.putalpha(a)
             reflection_position = (position[0], position[1] + overlay.height)
@@ -434,6 +769,8 @@ class ImageProcessingService:
         # -----------------------------
         output_path = str(self._temp_dir / f"composited-{uuid.uuid4()}.png")
         final.save(output_path, "PNG", optimize=True)
+        
+        print(f"✅ Composite saved: {output_path}")
 
         return output_path
 
@@ -643,10 +980,17 @@ class ImageProcessingService:
             # Step 3: Composite the images
             logger.info("Step 3: Compositing images...")
             temp_output_path = self._composite_images_locally(
-                temp_bg_path,
-                no_bg_local_path,
+                background_path=temp_bg_path,
+                overlay_path=no_bg_local_path,
                 position=(0, 0),  # Center the product
-                resize_overlay=True
+                resize_overlay=True,
+                shadow_angle=135,
+                shadow_distance=30,
+                enable_color_matching=True,
+                enable_histogram_matching=True,
+                enable_rim_light=True,
+                brightness_adjust=1.0,
+                contrast_adjust=1.05,
             )
 
             # Step 4: Upload to Supabase
