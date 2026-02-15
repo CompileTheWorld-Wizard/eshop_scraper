@@ -4,14 +4,21 @@ Remotion API Routes
 Middleware endpoints that bridge Next.js and Remotion server.
 These routes receive requests from Next.js, forward to Remotion server,
 and return responses back to Next.js.
+
+Before forwarding, the product title is optionally rewritten with OpenAI
+to a shorter, casual version for display in Remotion scenes.
 """
 
+import asyncio
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, Literal
 
+import openai
+
 from app.middleware.remotion_proxy import remotion_proxy
 from app.logging_config import get_logger
+from app.config import settings
 
 logger = get_logger(__name__)
 
@@ -63,6 +70,51 @@ class TaskStatusResponse(BaseModel):
     progress: Optional[int] = Field(None, ge=0, le=100)
     videoUrl: Optional[str] = None
     error: Optional[str] = None
+
+
+async def _rewrite_title_for_remotion(original_title: str) -> str:
+    """
+    Rewrite product title with OpenAI to a short, casual, friendly version for video display.
+    Returns original title if API key is missing or rewrite fails (no change to behavior).
+    """
+    if not original_title or not original_title.strip():
+        return original_title
+    if not getattr(settings, "OPENAI_API_KEY", None):
+        logger.debug("[Remotion] OPENAI_API_KEY not set, skipping title rewrite")
+        return original_title
+
+    def _call_openai() -> str:
+        client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You rewrite product titles to be short, casual, and friendly for video overlays. "
+                        "Output ONLY the rewritten title, no quotes or explanation. "
+                        "Keep it under 8 words when possible. Examples: "
+                        "'Ski Goggles PRO' instead of long technical names, "
+                        "'Newton Ridge Hiking Shoe' instead of full product lines."
+                    ),
+                },
+                {"role": "user", "content": original_title},
+            ],
+            max_tokens=60,
+            temperature=0.5,
+        )
+        if response.choices and response.choices[0].message.content:
+            return response.choices[0].message.content.strip()
+        return original_title
+
+    try:
+        rewritten = await asyncio.to_thread(_call_openai)
+        if rewritten and rewritten != original_title:
+            logger.info(f"[Remotion] Title rewritten: '{original_title[:50]}...' -> '{rewritten}'")
+        return rewritten or original_title
+    except Exception as e:
+        logger.warning(f"[Remotion] Title rewrite failed, using original: {e}")
+        return original_title
 
 
 # API Endpoints
@@ -135,7 +187,14 @@ async def start_video_generation(request: StartVideoRequest):
         # Convert product dict and exclude None values to keep payload clean
         product_dict = request.product.dict(exclude_none=True)
         
-        # Forward request to Remotion server
+        # Rewrite title to short, casual version for Remotion (only update title; rest unchanged)
+        original_title = product_dict.get("title") or product_dict.get("name")
+        if original_title and isinstance(original_title, str):
+            updated_title = await _rewrite_title_for_remotion(original_title)
+            product_dict["title"] = updated_title
+            product_dict["name"] = updated_title  # Remotion may use either field
+        
+        # Forward request to Remotion server with updated product (same form, title updated)
         result = await remotion_proxy.start_video_generation(
             template=request.template,
             image_url=request.imageUrl,

@@ -684,7 +684,7 @@ class ImageProcessingService:
         alpha = overlay.split()[3]
 
         # -----------------------------
-        # 🆕 6.5️⃣ DIRECTIONAL CAST SHADOW
+        # 🆕 6.5️⃣ DIRECTIONAL CAST SHADOW (canvas = background size so shadow isn't cropped by overlay)
         # -----------------------------
         print(f"🌑 Creating cast shadow (angle: {shadow_angle}°, distance: {shadow_distance}px)...")
         cast_shadow, shadow_offset = self._create_cast_shadow(
@@ -694,19 +694,17 @@ class ImageProcessingService:
             opacity=shadow_opacity * 0.9,
             blur=45
         )
-        
-        # Position cast shadow
         cast_shadow_pos = (
             position[0] + shadow_offset[0] - 45,  # Account for blur padding
             position[1] + shadow_offset[1] - 45
         )
-        
-        # Composite cast shadow (only if within bounds)
         if cast_shadow_pos[0] + cast_shadow.width > 0 and cast_shadow_pos[1] + cast_shadow.height > 0:
-            composited.paste(cast_shadow, cast_shadow_pos, cast_shadow)
+            cast_canvas = Image.new("RGBA", background.size, (0, 0, 0, 0))
+            cast_canvas.paste(cast_shadow, cast_shadow_pos, cast_shadow)
+            composited.paste(cast_canvas, (0, 0), cast_canvas)
 
         # -----------------------------
-        # 7️⃣ Contact shadow (under the object)
+        # 7️⃣ Contact shadow (canvas = background size so shadow isn't cropped by overlay)
         # -----------------------------
         print("🌑 Creating contact shadow...")
         contact_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
@@ -718,17 +716,21 @@ class ImageProcessingService:
         shadow_alpha = ImageEnhance.Brightness(shadow_alpha).enhance(shadow_opacity * 1.4)
         contact_shadow.putalpha(shadow_alpha)
         contact_position = (position[0], position[1] + overlay.height - contact_shadow.height)
-        composited.paste(contact_shadow, contact_position, contact_shadow)
+        contact_canvas = Image.new("RGBA", background.size, (0, 0, 0, 0))
+        contact_canvas.paste(contact_shadow, contact_position, contact_shadow)
+        composited.paste(contact_canvas, (0, 0), contact_canvas)
 
         # -----------------------------
-        # 🆕 7.5️⃣ IMPROVED AMBIENT OCCLUSION
+        # 🆕 7.5️⃣ IMPROVED AMBIENT OCCLUSION (canvas = background size so shadow isn't cropped by overlay)
         # -----------------------------
         print("🌑 Adding ambient occlusion...")
         ao = self._create_improved_ao(overlay, intensity=0.4)
         ao_position = (position[0], position[1] + int(overlay.height * 0.4))
         ao_resized = ao.resize((overlay.width, int(overlay.height * 0.6)), Image.Resampling.LANCZOS)
         ao_resized = ao_resized.filter(ImageFilter.GaussianBlur(30))
-        composited.paste(ao_resized, ao_position, ao_resized)
+        ao_canvas = Image.new("RGBA", background.size, (0, 0, 0, 0))
+        ao_canvas.paste(ao_resized, ao_position, ao_resized)
+        composited.paste(ao_canvas, (0, 0), ao_canvas)
 
         # -----------------------------
         # 9️⃣ Optional reflection

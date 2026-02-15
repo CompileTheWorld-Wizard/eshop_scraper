@@ -10,6 +10,7 @@ This module provides functionality for:
 """
 
 import os
+import re
 import uuid
 import threading
 import tempfile
@@ -188,11 +189,11 @@ class MergingService:
             if music_metadata:
                 temp_music_dir = tempfile.mkdtemp()
                 
-                # Download track1 if available
+                # Download track1 if available (from downloadUrl or path in Supabase)
                 if music_metadata.get('track1'):
                     track1 = music_metadata['track1']
                     logger.info(f"[STEP 3.5] Downloading track1: {track1.get('name')} ({track1.get('genre')})")
-                    track1_path = self._download_music_file(track1.get('path'), temp_music_dir)
+                    track1_path = self._download_music_track(track1, temp_music_dir)
                     if track1_path:
                         music_files.append(track1_path)
                         logger.info(f"[STEP 3.5] ✓ Track1 downloaded successfully")
@@ -203,7 +204,7 @@ class MergingService:
                 if music_metadata.get('track2'):
                     track2 = music_metadata['track2']
                     logger.info(f"[STEP 3.5] Downloading track2: {track2.get('name')} ({track2.get('genre')})")
-                    track2_path = self._download_music_file(track2.get('path'), temp_music_dir)
+                    track2_path = self._download_music_track(track2, temp_music_dir)
                     if track2_path:
                         music_files.append(track2_path)
                         logger.info(f"[STEP 3.5] ✓ Track2 downloaded successfully")
@@ -510,6 +511,85 @@ class MergingService:
         except Exception as e:
             logger.error(f"Failed to download background music from {music_path}: {e}")
             return None
+
+    def _download_music_from_url(self, download_url: str, temp_dir: str, suggested_filename: Optional[str] = None) -> Optional[str]:
+        """
+        Download background music file from an external URL (e.g. musicInfo.track1.downloadUrl).
+        
+        Args:
+            download_url: Full URL to the music file (e.g. AudioBlocks CDN)
+            temp_dir: Temporary directory to save the downloaded file
+            suggested_filename: Optional filename (e.g. from track name); extension will be preserved or default to .mp3
+            
+        Returns:
+            Path to temporary music file, or None if download fails
+        """
+        try:
+            logger.info(f"Downloading background music from external URL (length={len(download_url)})")
+            # Many CDNs (e.g. AudioBlocks/CloudFront) return 403 for non-browser User-Agents
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "audio/mpeg,audio/*,*/*",
+            }
+            with httpx.Client(timeout=DOWNLOAD_TIMEOUT) as client:
+                response = client.get(download_url, headers=headers)
+                response.raise_for_status()
+                content = response.content
+                content_disposition = response.headers.get("content-disposition")
+            if not content:
+                logger.error("Download returned empty content")
+                return None
+            # Determine filename: use suggested or derive from URL (path segment) or default
+            if suggested_filename:
+                base = suggested_filename.strip()
+                if not base.endswith(('.mp3', '.m4a', '.wav')):  
+                    base = f"{base}.mp3"
+                music_filename = "".join(c for c in base if c.isalnum() or c in "._- ") or "track.mp3"
+            else:
+                # Try Content-Disposition header
+                cd = content_disposition
+                if cd and "filename=" in cd:
+                    m = re.search(r'filename[*]?=(?:UTF-8\'\')?["\']?([^"\';]+)', cd, re.I)
+                    if m:
+                        music_filename = m.group(1).strip().strip('"')
+                    else:
+                        music_filename = "track.mp3"
+                else:
+                    path_part = download_url.split("?")[0].rstrip("/")
+                    music_filename = os.path.basename(path_part) or "track.mp3"
+            music_filename = music_filename[:200]
+            temp_music_path = os.path.join(temp_dir, music_filename)
+            with open(temp_music_path, 'wb') as f:
+                f.write(content)
+            file_size = os.path.getsize(temp_music_path)
+            logger.info(f"Successfully downloaded background music from URL: {temp_music_path} ({file_size / 1024:.2f} KB)")
+            return temp_music_path
+        except Exception as e:
+            logger.error(f"Failed to download background music from URL: {e}")
+            return None
+
+    def _download_music_track(self, track: Dict[str, Any], temp_dir: str) -> Optional[str]:
+        """
+        Download one background music track. Prefers downloadUrl (external) if present, else path (Supabase).
+        
+        Args:
+            track: Track dict with either downloadUrl (full URL) or path (Supabase path)
+            temp_dir: Temporary directory to save the file
+            
+        Returns:
+            Path to temporary music file, or None if download fails
+        """
+        if not track:
+            return None
+        download_url = track.get("downloadUrl") or track.get("download_url")
+        path = track.get("path")
+        name = track.get("name") or "track"
+        if download_url:
+            return self._download_music_from_url(download_url, temp_dir, suggested_filename=name)
+        if path:
+            return self._download_music_file(path, temp_dir)
+        logger.warning(f"Track has neither downloadUrl nor path: {list(track.keys())}")
+        return None
 
     def _download_audio(self, audio_url: str, task_id: str) -> str:
         """
@@ -1404,66 +1484,54 @@ class MergingService:
             else:
                 logger.info(f"   ✅ Audio and video durations match perfectly")
 
-            # Build FFmpeg command based on available inputs
-            # IMPORTANT: Using duration=shortest to ensure final video matches original video length
-            # Audio will be trimmed if longer than video - we NEVER cut video scenes
+            # Build FFmpeg command: trim/pad all audio to exactly video duration so output = video length
+            vd = round(video_duration, 2)
+            logger.info(f"   - Output duration will be exactly {vd}s (video length)")
             if music_files and len(music_files) > 0:
                 logger.info(f"Merging with background music: {len(music_files)} track(s)")
                 
-                # Merge audio with video including background music
                 if len(music_files) == 1:
-                    # Single music track
                     cmd = [
                         'ffmpeg', '-y',
-                        '-i', video_path,      # Input 0: video with sound effects
-                        '-i', audio_path,      # Input 1: voice script audio
-                        '-i', music_files[0],  # Input 2: background music
-                        '-c:v', 'copy',        # Copy video codec without re-encoding
-                        '-filter_complex', 
-                        '[0:a]volume=0.2[vid_audio];'
-                        '[1:a]volume=1.0[voice_audio];'
-                        '[2:a]volume=0.4[bg_music];'
-                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
-                        '-map', '0:v',         # Map video from first input
-                        '-map', '[out]',       # Map the mixed audio output
-                        '-c:a', 'aac',         # Convert mixed audio to AAC
+                        '-i', video_path,
+                        '-i', audio_path,
+                        '-i', music_files[0],
+                        '-c:v', 'copy',
+                        '-filter_complex',
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.2[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                        f'[2:a]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[bg_music];'
+                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:a', 'aac',
                         merged_path
                     ]
                 else:
-                    # Two music tracks - concatenate them first
                     cmd = [
                         'ffmpeg', '-y',
-                        '-i', video_path,      # Input 0: video with sound effects
-                        '-i', audio_path,      # Input 1: voice script audio
-                        '-i', music_files[0],  # Input 2: background music track1
-                        '-i', music_files[1],  # Input 3: background music track2
-                        '-c:v', 'copy',        # Copy video codec without re-encoding
+                        '-i', video_path,
+                        '-i', audio_path,
+                        '-i', music_files[0], '-i', music_files[1],
+                        '-c:v', 'copy',
                         '-filter_complex',
-                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
-                        '[0:a]volume=0.2[vid_audio];'
-                        '[1:a]volume=1.0[voice_audio];'
-                        '[bgmusic]volume=0.4[bg_audio];'
-                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
-                        '-map', '0:v',         # Map video from first input
-                        '-map', '[out]',       # Map the mixed audio output
-                        '-c:a', 'aac',         # Convert mixed audio to AAC
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bg_raw];'
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.2[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                        f'[bg_raw]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[bg_audio];'
+                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:a', 'aac',
                         merged_path
                     ]
             else:
-                # No background music - original behavior
                 logger.info("Merging without background music")
                 cmd = [
                     'ffmpeg', '-y',
-                    '-i', video_path,      # Input 0: video with sound effects
-                    '-i', audio_path,      # Input 1: voice script audio
-                    '-c:v', 'copy',        # Copy video codec without re-encoding
-                    '-filter_complex', 
-                    '[0:a]volume=0.3[vid_audio];'
-                    '[1:a]volume=1.0[voice_audio];'
-                    '[vid_audio][voice_audio]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
-                    '-map', '0:v',         # Map video from first input
-                    '-map', '[out]',       # Map the mixed audio output
-                    '-c:a', 'aac',         # Convert mixed audio to AAC
+                    '-i', video_path, '-i', audio_path,
+                    '-c:v', 'copy',
+                    '-filter_complex',
+                    f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.3[vid_audio];'
+                    f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                    '[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                    '-map', '0:v', '-map', '[out]', '-c:a', 'aac',
                     merged_path
                 ]
 
@@ -1499,62 +1567,43 @@ class MergingService:
                 logger.info("Video has no audio stream, using voice-only approach")
                 return self._merge_audio_with_video_basic(video_path, audio_path, task_id, music_files)
 
-            # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_simple.mp4")
+            video_duration = self._get_video_duration(video_path)
+            vd = round(video_duration, 2)
 
-            # Build simpler FFmpeg command
             if music_files and len(music_files) > 0:
                 logger.info(f"Simple merge with background music: {len(music_files)} track(s)")
-                
                 if len(music_files) == 1:
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,
-                        '-i', audio_path,
-                        '-i', music_files[0],
-                        '-c:v', 'copy',
-                        '-filter_complex',
-                        '[0:a]volume=0.3[vid_audio];'
-                        '[1:a]volume=1.0[voice_audio];'
-                        '[2:a]volume=0.4[bg_music];'
-                        '[vid_audio][voice_audio][bg_music]amix=inputs=3[out]',
-                        '-map', '0:v',
-                        '-map', '[out]',
-                        '-c:a', 'aac',
-                        merged_path
+                        'ffmpeg', '-y', '-i', video_path, '-i', audio_path, '-i', music_files[0],
+                        '-c:v', 'copy', '-filter_complex',
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.3[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                        f'[2:a]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[bg_music];'
+                        '[vid_audio][voice_audio][bg_music]amix=inputs=3:duration=longest[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:a', 'aac', merged_path
                     ]
                 else:
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,
-                        '-i', audio_path,
-                        '-i', music_files[0],
-                        '-i', music_files[1],
-                        '-c:v', 'copy',
-                        '-filter_complex',
-                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
-                        '[0:a]volume=0.3[vid_audio];'
-                        '[1:a]volume=1.0[voice_audio];'
-                        '[bgmusic]volume=0.4[bg_audio];'
-                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3[out]',
-                        '-map', '0:v',
-                        '-map', '[out]',
-                        '-c:a', 'aac',
-                        merged_path
+                        'ffmpeg', '-y', '-i', video_path, '-i', audio_path,
+                        '-i', music_files[0], '-i', music_files[1],
+                        '-c:v', 'copy', '-filter_complex',
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bg_raw];'
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.3[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                        f'[bg_raw]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[bg_audio];'
+                        '[vid_audio][voice_audio][bg_audio]amix=inputs=3:duration=longest[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:a', 'aac', merged_path
                     ]
             else:
-                # Simpler approach: mix audio streams using amix with volume adjustments
                 cmd = [
-                    'ffmpeg', '-y',
-                    '-i', video_path,      # Input 0: video with sound effects
-                    '-i', audio_path,      # Input 1: voice script audio
-                    '-c:v', 'copy',        # Copy video codec
-                    '-filter_complex', '[0:a]volume=0.5[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2[out]',  # Mix with volume adjustments
-                    '-map', '0:v',         # Map video from first input
-                    '-map', '[out]',       # Map the mixed audio output
-                    '-c:a', 'aac',         # Convert mixed audio to AAC
-                    merged_path
+                    'ffmpeg', '-y', '-i', video_path, '-i', audio_path,
+                    '-c:v', 'copy', '-filter_complex',
+                    f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.5[vid_audio];'
+                    f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                    '[vid_audio][voice_audio]amix=inputs=2:duration=longest[out]',
+                    '-map', '0:v', '-map', '[out]', '-c:a', 'aac', merged_path
                 ]
 
             result = subprocess.run(
@@ -1589,65 +1638,44 @@ class MergingService:
                 logger.info("Video has no audio stream, using basic approach")
                 return self._merge_audio_with_video_basic(video_path, audio_path, task_id, music_files)
 
-            # Create temporary directory for merged video
             temp_dir = tempfile.mkdtemp()
             merged_path = os.path.join(temp_dir, "video_with_audio_voice_priority.mp4")
+            video_duration = self._get_video_duration(video_path)
+            vd = round(video_duration, 2)
 
-            # Build FFmpeg command based on whether we have background music
             if music_files and len(music_files) > 0:
                 logger.info(f"Voice-priority merge with background music: {len(music_files)} track(s)")
-                
                 if len(music_files) == 1:
-                    # Video sound + voice + single music track
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video with sound effects
-                        '-i', audio_path,       # Input 1: voice audio
-                        '-i', music_files[0],   # Input 2: background music
+                        'ffmpeg', '-y', '-i', video_path, '-i', audio_path, '-i', music_files[0],
                         '-filter_complex',
-                        '[0:a]volume=0.15[vid_audio];'
-                        '[1:a]volume=1.0[voice];'
-                        '[2:a]volume=0.4[music];'
-                        '[vid_audio][voice][music]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
-                        '-map', '0:v',
-                        '-map', '[out]',
-                        '-c:v', 'copy',
-                        '-c:a', 'aac',
-                        merged_path
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.15[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice];'
+                        f'[2:a]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[music];'
+                        '[vid_audio][voice][music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac', merged_path
                     ]
                 else:
-                    # Video sound + voice + two music tracks
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video with sound effects
-                        '-i', audio_path,       # Input 1: voice audio
-                        '-i', music_files[0],   # Input 2: background music track1
-                        '-i', music_files[1],   # Input 3: background music track2
+                        'ffmpeg', '-y', '-i', video_path, '-i', audio_path,
+                        '-i', music_files[0], '-i', music_files[1],
                         '-filter_complex',
-                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
-                        '[0:a]volume=0.15[vid_audio];'
-                        '[1:a]volume=1.0[voice];'
-                        '[bgmusic]volume=0.4[music];'
-                        '[vid_audio][voice][music]amix=inputs=3:duration=shortest:dropout_transition=2[out]',
-                        '-map', '0:v',
-                        '-map', '[out]',
-                        '-c:v', 'copy',
-                        '-c:a', 'aac',
-                        merged_path
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bg_raw];'
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.15[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice];'
+                        f'[bg_raw]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[music];'
+                        '[vid_audio][voice][music]amix=inputs=3:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac', merged_path
                     ]
             else:
-                # No background music - voice-priority approach (original)
                 logger.info("Voice-priority merge: video sound + voice (no background music)")
                 cmd = [
-                    'ffmpeg', '-y',
-                    '-i', video_path,      # Input 0: video with sound effects
-                    '-i', audio_path,      # Input 1: voice script audio
-                    '-c:v', 'copy',        # Copy video codec
-                    '-filter_complex', '[0:a]volume=0.2[vid_audio];[1:a]volume=1.0[voice_audio];[vid_audio][voice_audio]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
-                    '-map', '0:v',         # Map video from first input
-                    '-map', '[out]',       # Map the mixed audio output
-                    '-c:a', 'aac',         # Convert mixed audio to AAC
-                    merged_path
+                    'ffmpeg', '-y', '-i', video_path, '-i', audio_path,
+                    '-c:v', 'copy', '-filter_complex',
+                    f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.2[vid_audio];'
+                    f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice_audio];'
+                    '[vid_audio][voice_audio]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                    '-map', '0:v', '-map', '[out]', '-c:a', 'aac', merged_path
                 ]
 
             result = subprocess.run(
@@ -1691,60 +1719,38 @@ class MergingService:
             if audio_duration > video_duration:
                 logger.warning(f"   ⚠️  Audio will be trimmed by {audio_duration - video_duration:.2f}s")
 
-            # Build FFmpeg command based on whether we have background music
+            vd = round(video_duration, 2)
             if music_files and len(music_files) > 0:
                 logger.info(f"Basic merge with background music: {len(music_files)} track(s)")
-                
                 if len(music_files) == 1:
-                    # Voice + single music track
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video (no audio or we ignore it)
-                        '-i', audio_path,       # Input 1: voice audio
-                        '-i', music_files[0],   # Input 2: background music
+                        'ffmpeg', '-y', '-i', video_path, '-i', audio_path, '-i', music_files[0],
                         '-filter_complex',
-                        '[1:a]volume=1.0[voice];'
-                        '[2:a]volume=0.4[music];'
-                        '[voice][music]amix=inputs=2:duration=shortest[out]',
-                        '-map', '0:v',          # Map video from first input
-                        '-map', '[out]',        # Map mixed audio
-                        '-c:v', 'copy',         # Copy video codec
-                        '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',            # Stop encoding when shortest input ends (video)
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice];'
+                        f'[2:a]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[music];'
+                        '[voice][music]amix=inputs=2:duration=longest[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                         merged_path
                     ]
                 else:
-                    # Voice + two music tracks - concatenate music first
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video (no audio or we ignore it)
-                        '-i', audio_path,       # Input 1: voice audio
-                        '-i', music_files[0],   # Input 2: background music track1
-                        '-i', music_files[1],   # Input 3: background music track2
+                        'ffmpeg', '-y', '-i', video_path, '-i', audio_path,
+                        '-i', music_files[0], '-i', music_files[1],
                         '-filter_complex',
-                        '[2:a][3:a]concat=n=2:v=0:a=1[bgmusic];'
-                        '[1:a]volume=1.0[voice];'
-                        '[bgmusic]volume=0.4[music];'
-                        '[voice][music]amix=inputs=2:duration=shortest[out]',
-                        '-map', '0:v',          # Map video from first input
-                        '-map', '[out]',        # Map mixed audio
-                        '-c:v', 'copy',         # Copy video codec
-                        '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',            # Stop encoding when shortest input ends (video)
+                        '[2:a][3:a]concat=n=2:v=0:a=1[bg_raw];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=1.0[voice];'
+                        f'[bg_raw]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[music];'
+                        '[voice][music]amix=inputs=2:duration=longest[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                         merged_path
                     ]
             else:
-                # No background music - voice only (original behavior)
                 logger.info("Basic merge: voice only (no background music)")
                 cmd = [
-                    'ffmpeg', '-y',
-                    '-i', video_path,
-                    '-i', audio_path,
-                    '-c:v', 'copy',        # Copy video codec
-                    '-c:a', 'aac',         # Convert audio to AAC
-                    '-map', '0:v',         # Map video from first input
-                    '-map', '1:a',         # Map audio from second input (voice script)
-                    '-shortest',           # Stop encoding when shortest input ends (video)
+                    'ffmpeg', '-y', '-i', video_path, '-i', audio_path,
+                    '-filter_complex',
+                    f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd}[out]',
+                    '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                     merged_path
                 ]
 
@@ -1792,82 +1798,54 @@ class MergingService:
             # Check if video has audio stream
             has_audio = self._check_video_has_audio(video_path)
             
-            # Get video duration for logging
             video_duration = self._get_video_duration(video_path)
-            logger.info(f"📏 Video duration: {video_duration:.2f}s - Music will be trimmed to match if needed")
+            vd = round(video_duration, 2)
+            logger.info(f"📏 Video duration: {video_duration:.2f}s - Output will be exactly {vd}s")
             
             if has_audio:
-                # Video has audio (sound effects) - mix it with background music
                 if len(music_files) == 1:
-                    # Single music track
                     logger.info(f"Merging video audio + 1 background music track")
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video with sound effects
-                        '-i', music_files[0],   # Input 1: background music
+                        'ffmpeg', '-y', '-i', video_path, '-i', music_files[0],
                         '-filter_complex',
-                        '[0:a]volume=0.2[vid_audio];'
-                        '[1:a]volume=0.4[bg_music];'
-                        '[vid_audio][bg_music]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
-                        '-map', '0:v',          # Map video from first input
-                        '-map', '[out]',        # Map mixed audio
-                        '-c:v', 'copy',         # Copy video codec
-                        '-c:a', 'aac',          # Convert audio to AAC
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.2[vid_audio];'
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[bg_music];'
+                        '[vid_audio][bg_music]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                         merged_path
                     ]
                 else:
-                    # Two music tracks - concatenate music first
                     logger.info(f"Merging video audio + 2 background music tracks")
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video with sound effects
-                        '-i', music_files[0],   # Input 1: background music track1
-                        '-i', music_files[1],   # Input 2: background music track2
+                        'ffmpeg', '-y', '-i', video_path,
+                        '-i', music_files[0], '-i', music_files[1],
                         '-filter_complex',
-                        '[1:a][2:a]concat=n=2:v=0:a=1[bgmusic];'
-                        '[0:a]volume=0.2[vid_audio];'
-                        '[bgmusic]volume=0.4[bg_music];'
-                        '[vid_audio][bg_music]amix=inputs=2:duration=shortest:dropout_transition=2[out]',
-                        '-map', '0:v',          # Map video from first input
-                        '-map', '[out]',        # Map mixed audio
-                        '-c:v', 'copy',         # Copy video codec
-                        '-c:a', 'aac',          # Convert audio to AAC
+                        '[1:a][2:a]concat=n=2:v=0:a=1[bg_raw];'
+                        f'[0:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.2[vid_audio];'
+                        f'[bg_raw]atrim=0:{vd},asetpts=PTS-STARTPTS,volume=0.4[bg_music];'
+                        '[vid_audio][bg_music]amix=inputs=2:duration=longest:dropout_transition=2[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                         merged_path
                     ]
             else:
-                # Video has no audio - just add background music
                 if len(music_files) == 1:
-                    # Single music track
                     logger.info(f"Adding 1 background music track to silent video")
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video (no audio)
-                        '-i', music_files[0],   # Input 1: background music
+                        'ffmpeg', '-y', '-i', video_path, '-i', music_files[0],
                         '-filter_complex',
-                        '[1:a]volume=0.4[out]',
-                        '-map', '0:v',          # Map video from first input
-                        '-map', '[out]',        # Map music as audio
-                        '-c:v', 'copy',         # Copy video codec
-                        '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',            # Match shortest stream duration
+                        f'[1:a]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.4[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                         merged_path
                     ]
                 else:
-                    # Two music tracks - concatenate music
                     logger.info(f"Adding 2 background music tracks to silent video")
                     cmd = [
-                        'ffmpeg', '-y',
-                        '-i', video_path,       # Input 0: video (no audio)
-                        '-i', music_files[0],   # Input 1: background music track1
-                        '-i', music_files[1],   # Input 2: background music track2
+                        'ffmpeg', '-y', '-i', video_path,
+                        '-i', music_files[0], '-i', music_files[1],
                         '-filter_complex',
-                        '[1:a][2:a]concat=n=2:v=0:a=1[bgmusic];'
-                        '[bgmusic]volume=0.4[out]',
-                        '-map', '0:v',          # Map video from first input
-                        '-map', '[out]',        # Map concatenated music as audio
-                        '-c:v', 'copy',         # Copy video codec
-                        '-c:a', 'aac',          # Convert audio to AAC
-                        '-shortest',            # Match shortest stream duration
+                        '[1:a][2:a]concat=n=2:v=0:a=1[bg_raw];'
+                        f'[bg_raw]atrim=0:{vd},asetpts=PTS-STARTPTS,apad=whole_dur={vd},volume=0.4[out]',
+                        '-map', '0:v', '-map', '[out]', '-c:v', 'copy', '-c:a', 'aac',
                         merged_path
                     ]
 

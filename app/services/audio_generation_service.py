@@ -511,7 +511,7 @@ Description: {short_description}"""
                 max_tokens=min(max_tokens_limit, 300),  # Cap at 300 tokens max for 24s videos
                 temperature=0.7
             )
-
+  
             if response.choices and response.choices[0].message.content:
                 script = response.choices[0].message.content.strip()
                 actual_word_count = len(script.split())

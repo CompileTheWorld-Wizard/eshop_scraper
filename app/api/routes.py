@@ -42,6 +42,7 @@ from app.security import (
 )
 from app.logging_config import get_logger
 from app.utils.credit_utils import can_perform_action
+from app.api.remotion_routes import _rewrite_title_for_remotion
 
 logger = get_logger(__name__)
 
@@ -1760,8 +1761,16 @@ async def generate_scene1_bridge(
         logger.info("📥 RECEIVED REQUEST FROM NEXT.JS - POST /remotion/generate-scene1")
         logger.info("=" * 80)
         
-        # Convert request to dict for logging
+        # Convert request to dict for logging and forwarding
         request_data = request.model_dump(exclude_none=True)
+        
+        # Rewrite product title to short, casual version before sending to Remotion
+        if request_data.get("product"):
+            product = request_data["product"]
+            original_title = product.get("title") or product.get("name")
+            if original_title and isinstance(original_title, str):
+                updated_title = await _rewrite_title_for_remotion(original_title)
+                request_data["product"] = {**product, "title": updated_title, "name": updated_title}
         
         # Log request details
         logger.info(f"📋 Request from Next.js:")
