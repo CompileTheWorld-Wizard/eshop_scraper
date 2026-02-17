@@ -49,7 +49,7 @@ class BackgroundGenerationService:
 
             logger.info("✓ OpenAI API key found")
             logger.info("→ Creating OpenAI client instance...")
-            self.openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            self.openai_client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)                                                               
             logger.info("✓ OpenAI client initialized for prompt extraction")
 
         except Exception as e:
@@ -332,11 +332,10 @@ class BackgroundGenerationService:
             
             env_text = "\n".join(env_context) if env_context else "No specific environment variables provided"
 
+            # Do NOT embed raw product description — image models can latch onto product nouns and draw them.
+            # Use only env vars and category/mood guidelines so the scene stays product-free.
             # This prompt is used directly with Vertex Imagen as the generation prompt
-            background_prompt = f"""Based on the following product description and environment variables, generate a professional BACKGROUND-ONLY scene suitable for compositing e-commerce product photography later.
-
-Product Description (for context only - DO NOT include or depict the product in any form):
-{product_description}
+            background_prompt = f"""Generate a professional BACKGROUND-ONLY empty scene suitable for compositing e-commerce product photography later. Do not depict any product, object, or main subject.
 
 Environment Variables:
 {env_text}
@@ -390,23 +389,23 @@ D) Universal Background Requirements:
 
 E) UNIVERSAL MOOD-TO-VISUAL MAPPING TABLE (Follow strictly):
 
-| Category               | Budget                                      | Mid-Range                                   | Luxury                                      |
-|------------------------|---------------------------------------------|---------------------------------------------|---------------------------------------------|
+| Category              | Budget                                     | Mid-Range                                   | Luxury                                      |
+|-----------------------|--------------------------------------------|---------------------------------------------|---------------------------------------------|
 | **Apparel**           | Bright white seamless, clean, high key     | Textured plaster, soft grays, diffused      | Marble, sculptural forms, dramatic shadow   |
 | **Electronics**       | Clean white, blue accent, tech minimal     | Charcoal gradient, rim light, precision     | Dark studio, amber accent, museum quality   |
 | **Home & Living**     | Bright airy, light wood, casual            | Warm neutrals, layered textures, curated    | Rich depths, art objects, gallery lighting  |
-| **Beauty**           | Pink/white, luminous, dewy soft focus      | Rose quartz, satin surfaces, soft glam      | Gold veining, black marble, spotlight       |
+| **Beauty**            | Pink/white, luminous, dewy soft focus      | Rose quartz, satin surfaces, soft glam      | Gold veining, black marble, spotlight       |
 | **Sports/Fitness**    | Bright primary, energetic, clean lines     | Concrete gray, amber light, athletic        | Polished charcoal, dramatic rim, premium    |
 | **Food & Beverage**   | Bright tabletop, casual, friendly          | Rustic wood, natural light, artisanal       | Dark stone, directional beam, jewel tones   |
 | **Pet Products**      | Warm home setting, soft, approachable      | Lifestyle interior, natural fibers          | Curated modern, architectural, quiet        |
-| **Office**           | Clean white, functional, productive        | Warm wood, soft focus, professional         | Leather textures, library tones, heritage   |
+| **Office**            | Clean white, functional, productive        | Warm wood, soft focus, professional         | Leather textures, library tones, heritage   |
 
-| Season     | Palette                               | Lighting                                | Context                                 |
-|------------|---------------------------------------|----------------------------------------|-----------------------------------------|
+| Season     | Palette                              | Lighting                              | Context                                |
+|------------|--------------------------------------|---------------------------------------|----------------------------------------|
 | Spring     | Soft pastels, blush, sage, cream     | Bright diffused, morning freshness    | Fresh botanicals, open air             |
 | Summer     | Warm whites, sand, sky blue          | Golden hour, high sun, vibrant        | Beach, pool, outdoor lifestyle         |
 | Fall       | Terracotta, olive, warm taupe        | Golden sidelight, cozy shadows        | Forest edge, harvest warmth            |
-| Winter     | Cool whites, charcoal, ice blue      | Soft overcast, crisp clean           | Snowy minimal, cozy interior           |
+| Winter     | Cool whites, charcoal, ice blue      | Soft overcast, crisp clean            | Snowy minimal, cozy interior           |
 | All-Season | True neutrals, balanced warmth       | Studio controlled, timeless           | Versatile, classic, permanent          |
 
 F) PRODUCT CATEGORY - SPECIFIC GUIDELINES:
@@ -492,6 +491,7 @@ NO human figures, mannequins, products, or animal subjects.
 NO food, beverages, or edible props.
 NO electronic screens displaying content.
 NO text, logos, or branding elements.
+NO shoes, books, or other product-like objects.
 
 The background must:
 - Be detailed and specific about environmental elements ONLY.
@@ -569,15 +569,20 @@ GENERATE UNIVERSAL PRODUCT BACKDROP DESCRIPTION NOW:"""
                 "The image will be used as a background only.\n"
                 "The product itself will be added later in post-processing.\n"
                 "Do NOT include the product in the scene.\n\n"
+                "CRITICAL - NO PRODUCT IN OUTPUT:\n"
+                "Your output prompt will be sent to an image model. You must NEVER mention, name, or describe the product itself in your output.\n"
+                "Do NOT describe any object, item, or subject that could be drawn (no bottles, shoes, clothes, devices, etc.).\n"
+                "Use the product description ONLY to infer: mood, category, price tier, and style — then describe ONLY the empty environment: surfaces, lighting, colors, atmosphere, depth.\n"
+                "The output must read like a description of an empty set or stage — no main subject, no product, no props that look like the product.\n\n"
                 "OBJECTIVE:\n"
                 "Create a visually appealing, realistic, high-end background that enhances the product's perceived value.\n\n"
                 "REQUIREMENTS:\n"
                 "- The center of the image must remain clean and not cluttered (reserved space for product placement).\n"
                 "- No text, logos, watermarks, or typography.\n"
-                "- No main subject in the center.\n"
-                "- Background must match the product's mood, category, and positioning.\n"
+                "- No main subject in the center. No product, no objects that could be mistaken for the product.\n"
+                "- Background must match the product's mood, category, and positioning (infer from description; do not name the product).\n"
                 "- Use cinematic lighting description.\n"
-                "- Describe environment, materials, atmosphere, depth, and lens style.\n"
+                "- Describe environment, materials, atmosphere, depth, and lens style only.\n"
                 "- Must feel professional, commercial-grade, photorealistic.\n\n"
                 "STYLE:\n"
                 "- High resolution\n"
@@ -587,10 +592,10 @@ GENERATE UNIVERSAL PRODUCT BACKDROP DESCRIPTION NOW:"""
                 "- Natural shadows\n"
                 "- Realistic textures\n\n"
                 "OUTPUT FORMAT:\n"
-                "Return ONLY the final image generation prompt.\n"
+                "Return ONLY the final image generation prompt. The prompt must describe an EMPTY scene (surfaces, lighting, atmosphere) with NO subject or product.\n"
                 "Do not explain anything.\n"
                 "Do not add extra commentary.\n\n"
-                "PRODUCT DESCRIPTION:\n"
+                "PRODUCT DESCRIPTION (use only to infer mood/category/style — do not mention or describe the product in your output):\n"
                 f"{product_description}\n"
             )
             if context_block:
@@ -641,12 +646,20 @@ GENERATE UNIVERSAL PRODUCT BACKDROP DESCRIPTION NOW:"""
             logger.info("  " + "-" * 76)
             
             logger.info("  → Calling Vertex AI Imagen API...")
-            
+
+            # Mandatory prefix/suffix so the image model never draws the product (critical for compositing)
+            vertex_prompt = (
+                "BACKGROUND ONLY. Empty scene. Do not draw or depict any product, object, or main subject. "
+                "No items in the center. This is an empty set for compositing. "
+                f"{background_prompt} "
+                "Remember: background only, no product, no main subject, empty center."
+            )
+
             # Generate the background image
             # Note: Imagen 4.0 generates images in 16:9 aspect ratio which produces approximately 1920x1080
             result = self.vertex_manager.client.models.generate_images(
                 model=model,
-                prompt=background_prompt,
+                prompt=vertex_prompt,
                 config=GenerateImagesConfig(
                     aspect_ratio="16:9",  # 1920x1080 resolution (Full HD)
                     number_of_images=1,

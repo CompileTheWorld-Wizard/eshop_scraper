@@ -2027,14 +2027,17 @@ def merge_image_with_video(
         print("\n" + "🔔 "*40)
         print("📨 NEW SCENE2 VIDEO MERGE REQUEST RECEIVED (ASYNC)")
         print("🔔 "*40)
-        logger.info(f"📥 Received async merge request for scene {request.scene_id} by user {request.user_id}")
-        logger.info(f"📋 Request details:")
-        logger.info(f"   - Product Image: {request.product_image_url[:80]}...")
-        logger.info(f"   - Background Video: {request.background_video_url[:80]}...")
-        logger.info(f"   - Scale: {request.scale}")
-        logger.info(f"   - Position: {request.position}")
-        logger.info(f"   - Duration: {request.duration}")
-        logger.info(f"   - Animation: {request.add_animation}")
+        logger.info(
+            "[Scene2] REQUEST | scene_id=%s user_id=%s | product_image=%s | background_video=%s | scale=%s position=%s duration=%s animation=%s",
+            request.scene_id,
+            request.user_id,
+            request.product_image_url[:60] + "..." if len(request.product_image_url) > 60 else request.product_image_url,
+            request.background_video_url[:60] + "..." if len(request.background_video_url) > 60 else request.background_video_url,
+            request.scale,
+            request.position,
+            request.duration,
+            request.add_animation,
+        )
         
         # Validate required fields
         if not request.product_image_url:

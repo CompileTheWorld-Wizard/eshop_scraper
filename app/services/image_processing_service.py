@@ -187,10 +187,11 @@ class ImageProcessingService:
         except Exception as e:
             raise Exception(f"Failed to call Remove.bg API: {str(e)}")
 
-    def _match_color_temperature(self, overlay, background):
+    def _match_color_temperature(self, overlay, background, strength=0.4):
         """
         🎯 NEW FEATURE: Color Temperature Matching
-        Adjusts overlay to match background lighting (warm/cool)
+        Adjusts overlay to match background lighting (warm/cool).
+        strength: 0 = no change, 1 = full effect (default 0.4 = subtle, user-identifiable).
         """
         # Convert to numpy for analysis
         bg_array = np.array(background.convert("RGB"))
@@ -204,9 +205,10 @@ class ImageProcessingService:
         
         # Extract RGB and alpha
         r, g, b, a = overlay.split()
-        r_arr = np.array(r, dtype=float)
-        g_arr = np.array(g, dtype=float)
-        b_arr = np.array(b, dtype=float)
+        r_orig = np.array(r, dtype=float)
+        g_orig = np.array(g, dtype=float)
+        b_orig = np.array(b, dtype=float)
+        r_arr, g_arr, b_arr = r_orig.copy(), g_orig.copy(), b_orig.copy()
         
         if blue_red_ratio < 0.9:  # Warm (more red)
             r_arr *= 1.12
@@ -218,7 +220,11 @@ class ImageProcessingService:
             b_arr *= 1.12
         # else: neutral, no adjustment
         
-        # Clip and convert back
+        # Blend with original so effect is subtle but identifiable
+        r_arr = strength * np.clip(r_arr, 0, 255) + (1 - strength) * r_orig
+        g_arr = strength * np.clip(g_arr, 0, 255) + (1 - strength) * g_orig
+        b_arr = strength * np.clip(b_arr, 0, 255) + (1 - strength) * b_orig
+        
         r = Image.fromarray(np.clip(r_arr, 0, 255).astype(np.uint8))
         g = Image.fromarray(np.clip(g_arr, 0, 255).astype(np.uint8))
         b = Image.fromarray(np.clip(b_arr, 0, 255).astype(np.uint8))
@@ -272,24 +278,29 @@ class ImageProcessingService:
         return Image.fromarray(overlay_array, "RGBA")
     
     
-    def _adjust_brightness_contrast(self, overlay, brightness=1.0, contrast=1.0):
+    def _adjust_brightness_contrast(self, overlay, brightness=1.0, contrast=1.0, strength=0.4):
         """
         🎯 NEW FEATURE: Brightness/Contrast Matching
-        Adjusts overlay exposure to match background
+        Adjusts overlay exposure to match background.
+        strength: 0 = no change, 1 = full effect (default 0.4 = subtle, user-identifiable).
         """
+        # Damp adjustments toward 1.0 so effect is subtle but identifiable
+        effective_brightness = 1.0 + (brightness - 1.0) * strength
+        effective_contrast = 1.0 + (contrast - 1.0) * strength
+
         r, g, b, a = overlay.split()
         
         # Apply brightness
-        if brightness != 1.0:
-            r = ImageEnhance.Brightness(r).enhance(brightness)
-            g = ImageEnhance.Brightness(g).enhance(brightness)
-            b = ImageEnhance.Brightness(b).enhance(brightness)
+        if effective_brightness != 1.0:
+            r = ImageEnhance.Brightness(r).enhance(effective_brightness)
+            g = ImageEnhance.Brightness(g).enhance(effective_brightness)
+            b = ImageEnhance.Brightness(b).enhance(effective_brightness)
         
         # Apply contrast
-        if contrast != 1.0:
-            r = ImageEnhance.Contrast(r).enhance(contrast)
-            g = ImageEnhance.Contrast(g).enhance(contrast)
-            b = ImageEnhance.Contrast(b).enhance(contrast)
+        if effective_contrast != 1.0:
+            r = ImageEnhance.Contrast(r).enhance(effective_contrast)
+            g = ImageEnhance.Contrast(g).enhance(effective_contrast)
+            b = ImageEnhance.Contrast(b).enhance(effective_contrast)
         
         return Image.merge("RGBA", (r, g, b, a))
     
@@ -625,25 +636,26 @@ class ImageProcessingService:
         # -----------------------------
         if enable_color_matching:
             print("🎨 Matching color temperature...")
-            overlay = self._match_color_temperature(overlay, background)
+            overlay = self._match_color_temperature(overlay, background, strength=0)
         
         if enable_histogram_matching:
             print("🎨 Matching histogram...")
-            overlay = self._match_histogram(overlay, background, strength=0.5)
+            overlay = self._match_histogram(overlay, background, strength=0.1)
         
         if brightness_adjust != 1.0 or contrast_adjust != 1.0:
             print(f"💡 Adjusting brightness ({brightness_adjust}) & contrast ({contrast_adjust})...")
             overlay = self._adjust_brightness_contrast(
                 overlay, 
                 brightness=brightness_adjust, 
-                contrast=contrast_adjust
+                contrast=contrast_adjust,
+                strength=0
             )
 
         # -----------------------------
         # 4️⃣ Smooth overlay edges
         # -----------------------------
         r, g, b, a = overlay.split()
-        a = a.filter(ImageFilter.GaussianBlur(2))
+        a = a.filter(ImageFilter.GaussianBlur(1))
         overlay = Image.merge("RGBA", (r, g, b, a))
 
         # -----------------------------
@@ -1138,8 +1150,9 @@ class ImageProcessingService:
         Updates task status as it progresses.
         """
         try:
-            logger.info(f"🔄 Processing image merge task {task_id}")
-            
+            logger.info("[Scene2] TASK picked up | task_id=%s scene_id=%s", task_id, scene_id)
+            logger.info("🔄 Processing image merge task %s", task_id)
+
             # Update task to processing
             start_task(task_id)
             
@@ -1285,52 +1298,54 @@ class ImageProcessingService:
             print("\n" + "="*80)
             print("🎬 SCENE 2 GENERATION - VIDEO MERGE STARTED")
             print("="*80)
-            logger.info(f"🚀 Starting image-video merge for scene {scene_id}")
-            logger.info(f"📦 Parameters:")
-            logger.info(f"   - Scene ID: {scene_id}")
-            logger.info(f"   - User ID: {user_id}")
-            logger.info(f"   - Product Scale: {scale * 100}%")
-            logger.info(f"   - Position: {position}")
-            logger.info(f"   - Duration Limit: {duration}s" if duration else "   - Duration Limit: Full video")
-            logger.info(f"   - Animation: {'Enabled (zoom + float)' if add_animation else 'Disabled'}")
-            logger.info(f"   - Shadow Effect: {'Enabled' if add_shadow else 'Disabled'}")
-            if add_shadow:
-                logger.info(f"   - Shadow Blur Radius: {shadow_blur_radius}")
-                logger.info(f"   - Shadow Offset: {shadow_offset}")
-            
+            logger.info("[Scene2] START | scene_id=%s user_id=%s", scene_id, user_id)
+            logger.info("[Scene2] Parameters: scale=%s position=%s duration=%s animation=%s shadow=%s blur=%s offset=%s",
+                       scale, position, duration, add_animation, add_shadow, shadow_blur_radius if add_shadow else None, shadow_offset if add_shadow else None)
+            logger.info("🚀 Starting image-video merge for scene %s", scene_id)
+            logger.info("📦 Parameters: Scene ID=%s, User ID=%s, Scale=%s%%, Position=%s, Duration=%s, Animation=%s, Shadow=%s",
+                       scene_id, user_id, round(scale * 100), position, duration, add_animation, add_shadow)
+
             # Step 1: Download product image
+            logger.info("[Scene2] Step 1/6: Downloading product image - started")
             print("\n📥 STEP 1/6: Downloading Product Image")
             print("-" * 80)
-            logger.info(f"🖼️  Product image URL: {product_image_url[:80]}...")
+            logger.info("🖼️  Product image URL: %s...", product_image_url[:80])
             temp_product_path = self._download_image_from_url(product_image_url)
-            logger.info(f"✅ Product image downloaded: {temp_product_path}")
+            logger.info("[Scene2] Step 1/6: Downloading product image - done | path=%s", temp_product_path)
+            logger.info("✅ Product image downloaded: %s", temp_product_path)
 
             # Step 2: Add shadow effect to product image using PIL
             if add_shadow:
+                logger.info("[Scene2] Step 2/6: Adding shadow effect (PIL) - started")
                 print("\n✨ STEP 2/6: Adding Shadow Effect to Product Image (PIL)")
                 print("-" * 80)
                 logger.info("🔄 Adding shadow effect to product image using PIL...")
-                
+
                 temp_shadow_product_path = self._add_pil_shadow_to_image(
                     temp_product_path,
                     blur_radius=shadow_blur_radius,
                     offset=shadow_offset
                 )
-                logger.info(f"✅ Shadow effect added: {temp_shadow_product_path}")
-                
+                logger.info("[Scene2] Step 2/6: Adding shadow effect (PIL) - done | path=%s", temp_shadow_product_path)
+                logger.info("✅ Shadow effect added: %s", temp_shadow_product_path)
+
                 # Use the shadow-enhanced image for further processing
                 product_path_for_merge = temp_shadow_product_path
             else:
+                logger.info("[Scene2] Step 2/6: Skipped (shadow disabled)")
                 product_path_for_merge = temp_product_path
-            
+
             # Step 3: Download background video
+            logger.info("[Scene2] Step 3/6: Downloading background video - started")
             print("\n📥 STEP 3/6: Downloading Background Video")
             print("-" * 80)
-            logger.info(f"🎥 Background video URL: {background_video_url[:80]}...")
+            logger.info("🎥 Background video URL: %s...", background_video_url[:80])
             temp_video_path = self._download_video_from_url(background_video_url)
-            logger.info(f"✅ Background video downloaded: {temp_video_path}")
+            logger.info("[Scene2] Step 3/6: Downloading background video - done | path=%s", temp_video_path)
+            logger.info("✅ Background video downloaded: %s", temp_video_path)
             
             # Step 4: Merge using OpenCV
+            logger.info("[Scene2] Step 4/6: Merging product with video (OpenCV) - started")
             print("\n🎨 STEP 4/6: Merging Product with Video (OpenCV Processing)")
             print("-" * 80)
             logger.info("🔄 Starting OpenCV video processing...")
@@ -1342,9 +1357,11 @@ class ImageProcessingService:
                 duration=duration,
                 add_animation=add_animation
             )
-            logger.info(f"✅ Video merge completed: {temp_output_path}")
-            
+            logger.info("[Scene2] Step 4/6: Merging product with video (OpenCV) - done | path=%s", temp_output_path)
+            logger.info("✅ Video merge completed: %s", temp_output_path)
+
             # Step 5: Upload to Supabase storage
+            logger.info("[Scene2] Step 5/6: Uploading merged video to Supabase - started")
             print("\n☁️  STEP 5/6: Uploading Merged Video to Supabase")
             print("-" * 80)
             logger.info("📤 Uploading video to Supabase storage...")
@@ -1353,21 +1370,25 @@ class ImageProcessingService:
                 scene_id=scene_id,
                 user_id=user_id
             )
-            logger.info(f"✅ Video uploaded successfully")
-            logger.info(f"🔗 Video URL: {video_url}")
-            
+            logger.info("[Scene2] Step 5/6: Uploading merged video to Supabase - done | url=%s", video_url[:80] + "..." if len(video_url) > 80 else video_url)
+            logger.info("✅ Video uploaded successfully")
+            logger.info("🔗 Video URL: %s", video_url)
+
             # Step 6: Update scene in database
+            logger.info("[Scene2] Step 6/6: Updating database - started")
             print("\n💾 STEP 6/6: Updating Database")
             print("-" * 80)
-            logger.info(f"📝 Updating scene {scene_id} in video_scenes table...")
+            logger.info("📝 Updating scene %s in video_scenes table...", scene_id)
             self._update_scene_video_url(scene_id, video_url)
-            logger.info(f"✅ Database updated successfully")
-            
+            logger.info("[Scene2] Step 6/6: Updating database - done")
+            logger.info("✅ Database updated successfully")
+
             print("\n" + "="*80)
             print("✅ SCENE 2 GENERATION COMPLETED SUCCESSFULLY")
             print("="*80)
-            logger.info(f"🎉 Image-video merge completed successfully for scene {scene_id}")
-            logger.info(f"🔗 Final video URL: {video_url}")
+            logger.info("[Scene2] COMPLETED | scene_id=%s | video_url=%s", scene_id, video_url[:80] + "..." if len(video_url) > 80 else video_url)
+            logger.info("🎉 Image-video merge completed successfully for scene %s", scene_id)
+            logger.info("🔗 Final video URL: %s", video_url)
             print()
             
             return {
@@ -1381,7 +1402,7 @@ class ImageProcessingService:
             print("\n" + "="*80)
             print("❌ SCENE 2 GENERATION FAILED")
             print("="*80)
-            logger.error(f"❌ Error: {error_msg}", exc_info=True)
+            logger.error("[Scene2] FAILED | scene_id=%s | error=%s", scene_id, error_msg, exc_info=True)
             print()
             return {
                 'success': False,
