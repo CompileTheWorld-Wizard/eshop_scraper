@@ -233,10 +233,18 @@ class TestAudioService:
     
     def get_test_audio(self, request: TestAudioRequest) -> TestAudioResponse:
         """Get or generate test audio for the given voice and language"""
+        logger.info(
+            "test_audio request | voice_id=%s language=%s user_id=%s",
+            request.voice_id, request.language, request.user_id,
+        )
         try:
             # Validate language
             if not self._validate_language(request.language):
-                return TestAudioResponse(
+                logger.warning(
+                    "test_audio validation failed | voice_id=%s language=%s unsupported",
+                    request.voice_id, request.language,
+                )
+                resp = TestAudioResponse(
                     voice_id=request.voice_id,
                     language=request.language,
                     audio_url="",
@@ -246,12 +254,18 @@ class TestAudioService:
                     message=f"Unsupported language: {request.language}. Supported languages: {', '.join(self.supported_languages)}",
                     test_text=""
                 )
+                logger.info("test_audio response | status=validation_failed voice_id=%s", request.voice_id)
+                return resp
             
             # Check if test audio already exists
             cached_audio = self._get_cached_audio(request.voice_id, request.language)
             if cached_audio:
+                logger.info(
+                    "test_audio cache hit | voice_id=%s language=%s audio_url=%s",
+                    request.voice_id, request.language, cached_audio.get('audio_url', '')[:80],
+                )
                 test_text = self._get_test_text(request.language)
-                return TestAudioResponse(
+                resp = TestAudioResponse(
                     voice_id=request.voice_id,
                     language=request.language,
                     audio_url=cached_audio['audio_url'],
@@ -261,12 +275,16 @@ class TestAudioService:
                     message="Test audio retrieved from cache",
                     test_text=test_text
                 )
-            
+                logger.info("test_audio response | status=cached voice_id=%s", request.voice_id)
+                return resp
+
+            logger.info("test_audio cache miss | voice_id=%s language=%s generating", request.voice_id, request.language)
             # Generate new test audio
             audio_url = self._generate_test_audio(request.voice_id, request.language, request.user_id)
             if not audio_url:
+                logger.warning("test_audio generation failed | voice_id=%s language=%s", request.voice_id, request.language)
                 test_text = self._get_test_text(request.language)
-                return TestAudioResponse(
+                resp = TestAudioResponse(
                     voice_id=request.voice_id,
                     language=request.language,
                     audio_url="",
@@ -276,12 +294,15 @@ class TestAudioService:
                     message="Failed to generate test audio",
                     test_text=test_text
                 )
-            
+                logger.info("test_audio response | status=failed_generation voice_id=%s", request.voice_id)
+                return resp
+
+            logger.info("test_audio saving to cache | voice_id=%s language=%s", request.voice_id, request.language)
             # Save to MongoDB for future use
             self._save_audio_to_mongodb(request.voice_id, request.language, audio_url, request.user_id)
-            
+
             test_text = self._get_test_text(request.language)
-            return TestAudioResponse(
+            resp = TestAudioResponse(
                 voice_id=request.voice_id,
                 language=request.language,
                 audio_url=audio_url,
@@ -291,11 +312,16 @@ class TestAudioService:
                 message="Test audio generated successfully",
                 test_text=test_text
             )
-            
+            logger.info(
+                "test_audio response | status=generated voice_id=%s audio_url=%s",
+                request.voice_id, audio_url[:80] if audio_url else "",
+            )
+            return resp
+
         except Exception as e:
-            logger.error(f"Error in get_test_audio: {e}")
+            logger.error("test_audio error | voice_id=%s language=%s error=%s", request.voice_id, request.language, e)
             test_text = self._get_test_text(request.language)
-            return TestAudioResponse(
+            resp = TestAudioResponse(
                 voice_id=request.voice_id,
                 language=request.language,
                 audio_url="",
@@ -305,6 +331,8 @@ class TestAudioService:
                 message=f"Error: {str(e)}",
                 test_text=test_text
             )
+            logger.info("test_audio response | status=error voice_id=%s", request.voice_id)
+            return resp
 
 
 # Create singleton instance

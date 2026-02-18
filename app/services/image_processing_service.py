@@ -1471,6 +1471,7 @@ class ImageProcessingService:
             canvas_w = overlay.width + 2 * pad
             canvas_h = overlay.height + 2 * pad
             result = Image.new("RGBA", (canvas_w, canvas_h), (0, 0, 0, 0))
+            
             pos_x, pos_y = pad, pad
 
             # 1. Directional cast shadow (same as compositing step 6.5)
