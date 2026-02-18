@@ -1456,7 +1456,17 @@ class ImageProcessingService:
         try:
             logger.info(f"🖼️  Adding PIL shadow to image (cast+contact+AO): {image_path}")
             
-            overlay = Image.open(image_path).convert("RGBA")
+            # Load and ensure RGBA without altering product colors (avoid convert("RGBA") color shift)
+            img = Image.open(image_path)
+            if img.mode == "RGBA":
+                overlay = img.copy()
+            elif img.mode == "RGB":
+                r, g, b = img.split()
+                overlay = Image.merge("RGBA", (r, g, b, Image.new("L", img.size, 255)))
+            else:
+                overlay = img.convert("RGBA")
+            # Untouched copy for final paste so only shadow is added, product colors preserved
+            product_only = overlay.copy()
             alpha = overlay.split()[3]
             
             # If offset is provided and non-zero, derive angle and distance for cast shadow
@@ -1505,8 +1515,9 @@ class ImageProcessingService:
             ao_resized = ao_resized.filter(ImageFilter.GaussianBlur(ao_blur))
             result.paste(ao_resized, ao_position, ao_resized)
 
-            # 4. Product on top
-            result.paste(overlay, (pos_x, pos_y), overlay)
+            # 4. Product on top — paste untouched copy with alpha mask (no color change)
+            product_alpha = product_only.split()[3]
+            result.paste(product_only, (pos_x, pos_y), product_alpha)
 
             base, ext = os.path.splitext(image_path)
             output_path = f"{base}_with_shadow{ext}"
