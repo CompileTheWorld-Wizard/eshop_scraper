@@ -1625,10 +1625,12 @@ class ImageProcessingService:
             logger.info(f"   - Total Frames: {total_frames}")
             logger.info(f"   - Duration: {video_duration:.2f}s")
             
-            # Load product image
+            # Load product image (PIL gives RGB; OpenCV uses BGR — convert so product colors match video)
             product_img = Image.open(product_path).convert("RGBA")
             product_np = np.array(product_img)
-            
+            # PIL RGBA = R,G,B,A; OpenCV frame = B,G,R. Convert product to BGRA so compositing doesn't swap R/B.
+            product_np = product_np[:, :, [2, 1, 0, 3]]
+
             logger.info(f"🖼️  Product Image: {product_np.shape[1]}x{product_np.shape[0]} pixels")
             
             # Create output video - use temp AVI first for better compatibility
