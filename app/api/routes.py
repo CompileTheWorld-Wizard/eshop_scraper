@@ -1136,7 +1136,7 @@ def composite_images(
             user_id=request.user_id,
             position=(request.position_x, request.position_y),
             resize_overlay=request.resize_overlay,
-            overlay_rate=request.overlay_rate if request.overlay_rate is not None else 0.6,
+            overlay_rate=0.6 if request.overlay_rate is None else request.overlay_rate,
             overlay_size=tuple(request.overlay_size) if request.overlay_size and len(request.overlay_size) >= 2 else None,
             shadow_canvas_padding=request.shadow_canvas_padding if request.shadow_canvas_padding is not None else 0,
             add_reflection=request.add_reflection if request.add_reflection is not None else True
