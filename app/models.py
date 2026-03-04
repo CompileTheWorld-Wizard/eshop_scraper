@@ -304,6 +304,10 @@ class ImageCompositeRequest(BaseModel):
     position_x: Optional[int] = Field(0, description="X position to place overlay on background (0 = auto-center)")
     position_y: Optional[int] = Field(0, description="Y position to place overlay on background (0 = auto-center)")
     resize_overlay: Optional[bool] = Field(True, description="Whether to resize overlay to fit background")
+    overlay_rate: Optional[float] = Field(0.6, description="Size of product overlay as fraction of canvas (0.0-1.0), e.g. 0.6 = 60%")
+    overlay_size: Optional[list[int]] = Field(None, description="Override size in pixels as [max_width, max_height]. Overlay fits within this box (aspect ratio preserved). When set, ignores overlay_rate for sizing.")
+    shadow_canvas_padding: Optional[int] = Field(0, description="Extra pixels on each side of the canvas so cast shadow and reflection are not cropped. 0 = original behavior (shadow may be clipped). e.g. 120 for full shadow.")
+    add_reflection: Optional[bool] = Field(True, description="Whether to add a soft reflection of the overlay below the product (mirror-like effect).")
 
 
 class ImageCompositeResponse(BaseModel):

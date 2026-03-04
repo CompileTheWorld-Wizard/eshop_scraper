@@ -472,7 +472,11 @@ class ImageProcessingService:
         scene_id: str,
         user_id: str,
         position: Tuple[int, int] = (0, 0),
-        resize_overlay: bool = True
+        resize_overlay: bool = True,
+        overlay_rate: float = 0.6,
+        overlay_size: Optional[Tuple[int, int]] = None,
+        shadow_canvas_padding: int = 0,
+        add_reflection: bool = True,
     ) -> Dict[str, Any]:
         """
         Composite two images together (overlay on top of background).
@@ -484,6 +488,10 @@ class ImageProcessingService:
             user_id: User ID for organizing files
             position: (x, y) position to place overlay on background (default: centered)
             resize_overlay: Whether to resize overlay to fit background (default: True)
+            overlay_rate: Size of overlay as fraction of canvas 0.0-1.0 (default: 0.6)
+            overlay_size: Optional (max_width, max_height) in pixels; when set, overrides overlay_rate for sizing
+            shadow_canvas_padding: Extra pixels on each side so cast shadow/reflection are not cropped (0 = may crop)
+            add_reflection: Whether to add reflection effect below the overlay (default: True)
 
         Returns:
             Dict containing:
@@ -512,6 +520,10 @@ class ImageProcessingService:
                 overlay_path=temp_overlay_path,
                 position=position,
                 resize_overlay=resize_overlay,
+                overlay_rate=overlay_rate,
+                overlay_size=overlay_size,
+                shadow_canvas_padding=shadow_canvas_padding,
+                add_reflection=add_reflection,
                 shadow_angle=135,
                 shadow_distance=30,
                 enable_color_matching=True,
@@ -574,6 +586,9 @@ class ImageProcessingService:
         overlay_path: str,
         position=(0, 0),
         resize_overlay=True,
+        overlay_rate=0.6,
+        overlay_size: Optional[Tuple[int, int]] = None,
+        shadow_canvas_padding: int = 0,
         landscape_width=1920,
         landscape_height=1080,
         add_reflection=True,
@@ -623,8 +638,12 @@ class ImageProcessingService:
         # 3️⃣ Resize overlay proportionally
         # -----------------------------
         if resize_overlay:
-            max_width = int(landscape_width * 0.6)
-            max_height = int(landscape_height * 0.6)
+            if overlay_size and len(overlay_size) >= 2 and overlay_size[0] > 0 and overlay_size[1] > 0:
+                max_width, max_height = int(overlay_size[0]), int(overlay_size[1])
+            else:
+                rate = max(0.01, min(1.0, overlay_rate))  # Clamp to 0.01–1.0
+                max_width = int(landscape_width * rate)
+                max_height = int(landscape_height * rate)
             scale = min(max_width / overlay.width, max_height / overlay.height)
             overlay = overlay.resize(
                 (int(overlay.width * scale), int(overlay.height * scale)),
@@ -690,13 +709,31 @@ class ImageProcessingService:
                 (landscape_height - overlay.height) // 2
             )
 
-        composited = Image.new("RGBA", background.size)
-        composited.paste(background, (0, 0))
+        # -----------------------------
+        # 5.5️⃣ Optional: expand canvas so cast shadow and reflection are not cropped
+        # -----------------------------
+        pad = max(0, shadow_canvas_padding)
+        if pad > 0:
+            canvas_w = landscape_width + 2 * pad
+            canvas_h = landscape_height + 2 * pad
+            # Fill padding with mean background color so edges look natural
+            bg_rgb = np.array(background.convert("RGB"))
+            fill_r = int(np.mean(bg_rgb[:, :, 0]))
+            fill_g = int(np.mean(bg_rgb[:, :, 1]))
+            fill_b = int(np.mean(bg_rgb[:, :, 2]))
+            composited = Image.new("RGBA", (canvas_w, canvas_h), (fill_r, fill_g, fill_b, 255))
+            composited.paste(background, (pad, pad))
+            position = (position[0] + pad, position[1] + pad)
+            canvas_size = (canvas_w, canvas_h)
+        else:
+            composited = Image.new("RGBA", background.size)
+            composited.paste(background, (0, 0))
+            canvas_size = background.size
 
         alpha = overlay.split()[3]
 
         # -----------------------------
-        # 🆕 6.5️⃣ DIRECTIONAL CAST SHADOW (canvas = background size so shadow isn't cropped by overlay)
+        # 🆕 6.5️⃣ DIRECTIONAL CAST SHADOW (canvas size allows full shadow when padding > 0)
         # -----------------------------
         print(f"🌑 Creating cast shadow (angle: {shadow_angle}°, distance: {shadow_distance}px)...")
         cast_shadow, shadow_offset = self._create_cast_shadow(
@@ -711,12 +748,12 @@ class ImageProcessingService:
             position[1] + shadow_offset[1] - 45
         )
         if cast_shadow_pos[0] + cast_shadow.width > 0 and cast_shadow_pos[1] + cast_shadow.height > 0:
-            cast_canvas = Image.new("RGBA", background.size, (0, 0, 0, 0))
+            cast_canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
             cast_canvas.paste(cast_shadow, cast_shadow_pos, cast_shadow)
             composited.paste(cast_canvas, (0, 0), cast_canvas)
 
         # -----------------------------
-        # 7️⃣ Contact shadow (canvas = background size so shadow isn't cropped by overlay)
+        # 7️⃣ Contact shadow
         # -----------------------------
         print("🌑 Creating contact shadow...")
         contact_shadow = Image.new("RGBA", overlay.size, (0, 0, 0, 255))
@@ -728,19 +765,19 @@ class ImageProcessingService:
         shadow_alpha = ImageEnhance.Brightness(shadow_alpha).enhance(shadow_opacity * 1.4)
         contact_shadow.putalpha(shadow_alpha)
         contact_position = (position[0], position[1] + overlay.height - contact_shadow.height)
-        contact_canvas = Image.new("RGBA", background.size, (0, 0, 0, 0))
+        contact_canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
         contact_canvas.paste(contact_shadow, contact_position, contact_shadow)
         composited.paste(contact_canvas, (0, 0), contact_canvas)
 
         # -----------------------------
-        # 🆕 7.5️⃣ IMPROVED AMBIENT OCCLUSION (canvas = background size so shadow isn't cropped by overlay)
+        # 🆕 7.5️⃣ IMPROVED AMBIENT OCCLUSION
         # -----------------------------
         print("🌑 Adding ambient occlusion...")
         ao = self._create_improved_ao(overlay, intensity=0.4)
         ao_position = (position[0], position[1] + int(overlay.height * 0.4))
         ao_resized = ao.resize((overlay.width, int(overlay.height * 0.6)), Image.Resampling.LANCZOS)
         ao_resized = ao_resized.filter(ImageFilter.GaussianBlur(30))
-        ao_canvas = Image.new("RGBA", background.size, (0, 0, 0, 0))
+        ao_canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
         ao_canvas.paste(ao_resized, ao_position, ao_resized)
         composited.paste(ao_canvas, (0, 0), ao_canvas)
 
