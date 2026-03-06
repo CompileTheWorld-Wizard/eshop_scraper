@@ -1741,10 +1741,10 @@ class ImageProcessingService:
                 else:
                     current_scale = scale
                 
-                # Calculate product size
-                product_w = max(1, int(width * current_scale))
+                # Calculate product size (cap to frame so overlay always fits)
+                product_w = max(1, min(width, int(width * current_scale)))
                 ratio = product_w / product_np.shape[1]
-                product_h = max(1, int(product_np.shape[0] * ratio))
+                product_h = max(1, min(height, int(product_np.shape[0] * ratio)))
                 
                 # Resize product
                 product_resized = cv2.resize(product_np, (product_w, product_h), 
@@ -1790,13 +1790,20 @@ class ImageProcessingService:
                 x = max(0, min(width - product_w, x))
                 y = max(0, min(height - product_h, y))
                 
-                # Composite product onto frame using alpha channel
-                alpha = product_resized[:, :, 3] / 255.0
+                # Clip blend region to frame bounds (product may be taller/wider than frame)
+                actual_h = min(product_h, height - y)
+                actual_w = min(product_w, width - x)
+                if actual_h <= 0 or actual_w <= 0:
+                    out.write(frame)
+                    frame_idx += 1
+                    continue
                 
+                # Composite product onto frame using alpha channel (slices must match shape)
+                alpha = product_resized[:actual_h, :actual_w, 3] / 255.0
                 for c in range(3):
-                    frame[y:y+product_h, x:x+product_w, c] = (
-                        frame[y:y+product_h, x:x+product_w, c] * (1 - alpha)
-                        + product_resized[:, :, c] * alpha
+                    frame[y:y+actual_h, x:x+actual_w, c] = (
+                        frame[y:y+actual_h, x:x+actual_w, c] * (1 - alpha)
+                        + product_resized[:actual_h, :actual_w, c] * alpha
                     )
                 
                 # Write frame
