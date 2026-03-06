@@ -171,8 +171,7 @@ class AudioGenerationService:
             
             logger.info(f"Audio uploaded successfully. Public URL: {final_audio_url}")
             
-            # Step 5: Deduct credits for successful audio generation
-            credit_result = asyncio.run(self._deduct_credits_for_audio_generation(request, audio_script, request.short_id))
+            credit_result = None  # Credit deduction disabled
             
             # Step 6: Generate SRT content from subtitle timing
             srt_content = self._generate_srt_content(subtitle_timing)
@@ -1012,54 +1011,6 @@ Description: {short_description}"""
         except Exception as e:
             logger.error(f"Error saving test audio to MongoDB: {e}")
             return False
-
-    async def _deduct_credits_for_audio_generation(self, request: AudioGenerationRequest, script: str, task_id: str) -> Dict[str, Any]:
-        """Deduct credits for successful audio generation"""
-        try:
-            # Import here to avoid circular imports
-            from app.utils.credit_utils import deduct_credits, check_user_credits
-            
-            # Create description for credit deduction
-            description = f"Generated audio for short {request.short_id}: {script[:50]}..."
-            
-            # Deduct credits for audio generation
-            success = deduct_credits(
-                user_id=request.user_id,
-                action_name="generate_audio",
-                reference_id=request.short_id,  # Use short_id instead of task_id
-                reference_type="audio_generation",
-                description=description
-            )
-            
-            if success:
-                # Get new balance after deduction
-                credit_info = check_user_credits(request.user_id)
-                new_balance = credit_info.get("available_credits")
-                logger.info(f"Successfully deducted credits for audio generation for user {request.user_id}, new balance: {new_balance}")
-                return {
-                    "success": True,
-                    "credits_used": 1,  # Assuming 1 credit per audio generation
-                    "new_balance": new_balance,
-                    "description": description
-                }
-            else:
-                logger.warning(f"Failed to deduct credits for audio generation for user {request.user_id}")
-                return {
-                    "success": False,
-                    "credits_used": 0,
-                    "new_balance": None,
-                    "description": description,
-                    "error": "Credit deduction failed"
-                }
-                
-        except Exception as e:
-            logger.error(f"Error deducting credits for audio generation: {e}")
-            return {
-                "success": False,
-                "credits_used": 0,
-                "new_balance": None,
-                "error": str(e)
-            }
 
     async def _save_failed_audio_to_supabase(self, request: AudioGenerationRequest, audio_url: str, script: str, words_per_minute: float, duration: float, upload_info: Optional[Dict[str, Any]] = None, credit_result: Optional[Dict[str, Any]] = None, error_message: str = "") -> bool:
         """Save failed audio info to Supabase audio_info table"""

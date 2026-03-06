@@ -95,58 +95,6 @@ class CreditManager:
             logger.error(f"Error checking action for user {user_id}, action {action_name}: {e}")
             return {"error": f"Failed to check action: {str(e)}"}
     
-    def deduct_credits(self, user_id: str, action_name: str, reference_id: Optional[str] = None, 
-                       reference_type: Optional[str] = None, description: Optional[str] = None) -> bool:
-        """
-        Deduct credits from user for performing an action.
-        
-        Args:
-            user_id: The user's UUID
-            action_name: The action being performed (e.g., 'scraping')
-            reference_id: Optional reference ID for the action
-            reference_type: Optional reference type
-            description: Optional description of the action
-            
-        Returns:
-            True if credits were deducted successfully, False otherwise
-        """
-        try:
-            if not self.supabase.is_connected():
-                logger.error("Supabase not connected")
-                return False
-            
-            # Call the deduct_user_credits function
-            result = self.supabase.client.rpc(
-                'deduct_user_credits',
-                {
-                    'user_uuid': user_id,
-                    'action_name': action_name,
-                    'reference_id': reference_id,
-                    'reference_type': reference_type,
-                    'description': description
-                }
-            ).execute()
-            
-            # Handle different return types from Supabase RPC
-            success = False
-            if isinstance(result.data, bool):
-                success = result.data
-            elif isinstance(result.data, list) and result.data:
-                success = bool(result.data[0])
-            else:
-                success = bool(result.data)  # Fallback for other unexpected formats
-            
-            if success:
-                logger.info(f"Successfully deducted credits for user {user_id}, action {action_name}")
-                return True
-            else:
-                logger.warning(f"Failed to deduct credits for user {user_id}, action {action_name} - result.data: {result.data}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error deducting credits for user {user_id}, action {action_name}: {e}")
-            return False
-    
     def add_credits(self, user_id: str, action_name: str, credits_amount: int, 
                     reference_id: Optional[str] = None, reference_type: Optional[str] = None, 
                     description: Optional[str] = None) -> bool:
@@ -245,12 +193,6 @@ def check_user_credits(user_id: str) -> Dict[str, Any]:
 def can_perform_action(user_id: str, action_name: str) -> Dict[str, Any]:
     """Convenience function to check if user can perform an action."""
     return credit_manager.can_perform_action(user_id, action_name)
-
-
-def deduct_credits(user_id: str, action_name: str, reference_id: Optional[str] = None, 
-                   reference_type: Optional[str] = None, description: Optional[str] = None) -> bool:
-    """Convenience function to deduct credits."""
-    return credit_manager.deduct_credits(user_id, action_name, reference_id, reference_type, description)
 
 
 def add_credits(user_id: str, action_name: str, credits_amount: int, 

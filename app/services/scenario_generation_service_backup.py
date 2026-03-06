@@ -23,7 +23,7 @@ from app.utils.task_management import (
     create_task, start_task, update_task_progress,
     complete_task, fail_task, TaskType, TaskStatus as TMStatus
 )
-from app.utils.credit_utils import can_perform_action, deduct_credits
+from app.utils.credit_utils import can_perform_action
 from app.utils.supabase_utils import supabase_manager
 from app.config import settings
 from app.logging_config import get_logger

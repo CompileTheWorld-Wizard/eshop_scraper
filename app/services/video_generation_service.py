@@ -23,7 +23,6 @@ from app.logging_config import get_logger
 from app.utils.vertex_utils import generate_video_with_prompt_and_image, generate_video_with_prompt_and_reference_images, generate_image_with_recontext_and_upscale, add_text_overlay_to_image, vertex_manager
 from app.utils.flux_utils import flux_manager
 from app.utils.supabase_utils import supabase_manager
-from app.utils.credit_utils import credit_manager
 from app.utils.task_management import (
     create_task, start_task, update_task_progress,
     complete_task, fail_task, get_task_status,
@@ -676,15 +675,6 @@ class VideoGenerationService:
         except Exception as cleanup_error:
             logger.warning(f"Failed to clean up temporary image file {local_image_path}: {cleanup_error}")
         
-        # Deduct credits after successful generation
-        credit_manager.deduct_credits(
-            user_id=user_id,
-            action_name="generate_image",
-            reference_id=scene_data['id'],
-            reference_type="scene",
-            description=f"Generated image for scene {scene_data['id']}"
-        )
-        
         return image_url
     
     async def _get_product_images_for_scene(self, scene_id: str) -> List[str]:
@@ -884,15 +874,6 @@ class VideoGenerationService:
             
             logger.info(f"Successfully stored video for scene {scene_id}")
             
-            # Deduct credits after successful generation
-            credit_manager.deduct_credits(
-                user_id=user_id,
-                action_name="generate_scene",
-                reference_id=scene_data['id'],
-                reference_type="scene",
-                description=f"Generated video for scene {scene_data['id']}"
-            )
-            
             return public_url, signed_url
             
         except Exception as e:
@@ -973,15 +954,6 @@ class VideoGenerationService:
             public_url, signed_url = self._store_local_video_in_supabase(video_path, user_id, scene_id)
             
             logger.info(f"Successfully stored video for scene {scene_id}")
-            
-            # Deduct credits after successful generation
-            credit_manager.deduct_credits(
-                user_id=user_id,
-                action_name="generate_scene",
-                reference_id=scene_data['id'],
-                reference_type="scene",
-                description=f"Generated video for scene {scene_data['id']}"
-            )
             
             return public_url, signed_url
             

@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from app.models import ProductInfo, TaskStatusResponse, TaskStatus, TaskPriority
 from app.utils import generate_task_id, proxy_manager, user_agent_manager, is_valid_url
-from app.utils.credit_utils import can_perform_action, deduct_credits
+from app.utils.credit_utils import can_perform_action
 from app.utils.task_management import (
     create_task, start_task, update_task_progress, 
     complete_task, fail_task, get_task_status, TaskType, TaskStatus as TMStatus
@@ -578,22 +578,6 @@ class ScrapingService:
             
             logger.info(f"Successfully scraped product from {url}")
             
-            # Deduct credits on successful scraping
-            try:
-                success = deduct_credits(
-                    user_id=user_id, 
-                    action_name="scraping",
-                    reference_id=product_id,
-                    reference_type="product",
-                    description=f"Product scraping completed for {url}"
-                )
-                if success:
-                    logger.info(f"Successfully deducted credits for user {user_id} for scraping task {task_id}")
-                else:
-                    logger.warning(f"Failed to deduct credits for user {user_id} for scraping task {task_id}")
-            except Exception as credit_error:
-                logger.error(f"Error deducting credits for user {user_id} for scraping task {task_id}: {credit_error}")
-            
             # Clean up browser resources in the same thread where they were created
             try:
                 from app.browser_manager import browser_manager
@@ -909,22 +893,6 @@ class ScrapingService:
                 response.detail = {}
             
             logger.info(f"Successfully scraped product from {url}")
-            
-            # Deduct credits on successful scraping
-            try:
-                success = deduct_credits(
-                    user_id=default_user_id, 
-                    action_name="scraping",
-                    reference_id=product_id,
-                    reference_type="product",
-                    description=f"Product scraping completed for {url}"
-                )
-                if success:
-                    logger.info(f"Successfully deducted credits for user {default_user_id} for scraping task {actual_task_id}")
-                else:
-                    logger.warning(f"Failed to deduct credits for user {default_user_id} for scraping task {actual_task_id}")
-            except Exception as credit_error:
-                logger.error(f"Error deducting credits for user {default_user_id} for scraping task {actual_task_id}: {credit_error}")
             
             # Clean up browser resources
             try:
