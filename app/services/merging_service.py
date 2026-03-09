@@ -358,18 +358,25 @@ class MergingService:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
 
-            # Scenes are linked to shorts via video_scenes.short_id
-            scenes_result = supabase_manager.client.table('video_scenes').select(
-                'id, scene_number, generated_video_url, duration'
-            ).eq('short_id', short_id).eq('status', 'completed').not_.is_('generated_video_url', 'null').execute()
+            # Scenes linked via video_scenes.short_id. Include any scene that has a generated_video_url
+            # (status may be 'completed' or 'pending' depending on when the URL was set).
+            scenes_result = (
+                supabase_manager.client.table('video_scenes')
+                .select('id, scene_number, generated_video_url, duration')
+                .eq('short_id', short_id)
+                .not_.is_('generated_video_url', 'null')
+                .in_('status', ['completed', 'pending'])
+                .order('scene_number')
+                .execute()
+            )
 
             if not scenes_result.data:
                 raise Exception(
-                    f"No completed video scenes found for short {short_id}")
+                    f"No video scenes with generated_video_url found for short {short_id} "
+                    "(need generated_video_url set and status in completed/pending)")
 
-            # Sort by scene number
-            scenes = sorted(scenes_result.data,
-                            key=lambda x: x['scene_number'])
+            # Sort by scene number (DB already ordered; keep for consistency)
+            scenes = sorted(scenes_result.data, key=lambda x: x['scene_number'])
 
             return scenes
 
