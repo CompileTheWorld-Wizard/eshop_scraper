@@ -107,6 +107,7 @@ class VideoGenerationResponse(BaseModel):
 class FinalizeShortRequest(BaseModel):
     user_id: str = Field(..., description="User ID associated with the task")
     short_id: str = Field(..., description="Short ID to finalize")
+    include_subtitles: bool = Field(True, description="Whether to embed subtitles in the final video (default: True)")
 
 class FinalizeShortResponse(BaseModel):
     task_id: str

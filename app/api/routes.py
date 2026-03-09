@@ -463,7 +463,8 @@ def finalize_short(
         # Start finalization using merging service
         response = merging_service.start_finalize_short_task(
             user_id=request.user_id,
-            short_id=request.short_id
+            short_id=request.short_id,
+            include_subtitles=request.include_subtitles
         )
         
         # Convert response to FinalizeShortResponse format
