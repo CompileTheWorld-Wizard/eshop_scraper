@@ -353,12 +353,12 @@ class MergingService:
                 logger.info(f"[MERGE FLOW] Thread reference cleaned up for task_id: {task_id}")
 
     def _fetch_video_scenes(self, short_id: str) -> List[Dict[str, Any]]:
-        """Fetch all video scenes for a short directly from video_scenes table."""
+        """Fetch all video scenes for a short (scenes linked directly via short_id, not scenario_id)."""
         try:
             if not supabase_manager.is_connected():
                 raise Exception("Supabase connection not available")
 
-            # Get all scenes with generated videos directly using short_id
+            # Scenes are linked to shorts via video_scenes.short_id
             scenes_result = supabase_manager.client.table('video_scenes').select(
                 'id, scene_number, generated_video_url, duration'
             ).eq('short_id', short_id).eq('status', 'completed').not_.is_('generated_video_url', 'null').execute()
