@@ -769,21 +769,9 @@ class ImageProcessingService:
             position[0] + shadow_offset[0] - content_origin_x,
             position[1] + shadow_offset[1] - content_origin_y
         )
-        # Ensure shadow isn't clipped at top/left: add minimal padding if needed
-        pad_extra_top = max(0, -cast_shadow_pos[1])
-        pad_extra_left = max(0, -cast_shadow_pos[0])
-        if (pad_extra_top > 0 or pad_extra_left > 0) and pad == 0:
-            pad = max(pad_extra_top, pad_extra_left)
-            canvas_w = landscape_width + 2 * pad
-            canvas_h = landscape_height + 2 * pad
-            bg_rgb = np.array(background.convert("RGB"))
-            fill_r, fill_g, fill_b = int(np.mean(bg_rgb[:, :, 0])), int(np.mean(bg_rgb[:, :, 1])), int(np.mean(bg_rgb[:, :, 2]))
-            new_composited = Image.new("RGBA", (canvas_w, canvas_h), (fill_r, fill_g, fill_b, 255))
-            new_composited.paste(composited, (pad, pad))
-            composited = new_composited
-            position = (position[0] + pad, position[1] + pad)
-            canvas_size = (canvas_w, canvas_h)
-            cast_shadow_pos = (cast_shadow_pos[0] + pad, cast_shadow_pos[1] + pad)
+        # Do not expand the canvas when the cast shadow extends past the top/left edge.
+        # Small position_y (e.g. 0) used to trigger pad_extra_* and a mean-color "tan frame";
+        # Pillow pastes clip correctly at negative coordinates, so we only clip the shadow.
         if cast_shadow_pos[0] + cast_shadow.width > 0 and cast_shadow_pos[1] + cast_shadow.height > 0:
             cast_canvas = Image.new("RGBA", canvas_size, (0, 0, 0, 0))
             cast_canvas.paste(cast_shadow, cast_shadow_pos, cast_shadow)
