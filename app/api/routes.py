@@ -1140,7 +1140,12 @@ def composite_images(
             overlay_rate=0.6 if request.overlay_rate is None else request.overlay_rate,
             overlay_size=tuple(request.overlay_size) if request.overlay_size and len(request.overlay_size) >= 2 else None,
             shadow_canvas_padding=request.shadow_canvas_padding if request.shadow_canvas_padding is not None else 0,
-            add_reflection=request.add_reflection if request.add_reflection is not None else True
+            add_reflection=request.add_reflection if request.add_reflection is not None else True,
+            trim_overlay_to_alpha_bounds=(
+                request.trim_overlay_to_alpha_bounds
+                if request.trim_overlay_to_alpha_bounds is not None
+                else True
+            ),
         )
         
         # Build response

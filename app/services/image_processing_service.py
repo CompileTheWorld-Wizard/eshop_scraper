@@ -441,6 +441,18 @@ class ImageProcessingService:
             logger.warning(f"Rim lighting skipped: {e}")
             return overlay
 
+    def _trim_rgba_to_alpha_bounds(self, image: Image.Image, alpha_threshold: int = 16) -> Image.Image:
+        """Crop RGBA to the bounding box of pixels with alpha above threshold (ignores empty margins)."""
+        if image.mode != "RGBA":
+            return image
+        alpha = np.array(image.split()[3])
+        rows, cols = np.where(alpha > alpha_threshold)
+        if rows.size == 0:
+            return image
+        y0, y1 = int(rows.min()), int(rows.max()) + 1
+        x0, x1 = int(cols.min()), int(cols.max()) + 1
+        return image.crop((x0, y0, x1, y1))
+
     def _create_improved_ao(self, overlay, intensity=0.4):
         """
         🎯 IMPROVED: Better Ambient Occlusion with Gradient
@@ -477,6 +489,7 @@ class ImageProcessingService:
         overlay_size: Optional[Tuple[int, int]] = None,
         shadow_canvas_padding: int = 0,
         add_reflection: bool = True,
+        trim_overlay_to_alpha_bounds: bool = True,
     ) -> Dict[str, Any]:
         """
         Composite two images together (overlay on top of background).
@@ -492,6 +505,7 @@ class ImageProcessingService:
             overlay_size: Optional (max_width, max_height) in pixels; when set, overrides overlay_rate for sizing
             shadow_canvas_padding: Extra pixels on each side so cast shadow/reflection are not cropped (0 = may crop)
             add_reflection: Whether to add reflection effect below the overlay (default: True)
+            trim_overlay_to_alpha_bounds: Crop overlay to non-transparent bbox before layout (default: True)
 
         Returns:
             Dict containing:
@@ -524,6 +538,7 @@ class ImageProcessingService:
                 overlay_size=overlay_size,
                 shadow_canvas_padding=shadow_canvas_padding,
                 add_reflection=add_reflection,
+                trim_overlay_to_alpha_bounds=trim_overlay_to_alpha_bounds,
                 shadow_angle=135,
                 shadow_distance=30,
                 enable_color_matching=True,
@@ -592,6 +607,7 @@ class ImageProcessingService:
         landscape_width=1920,
         landscape_height=1080,
         add_reflection=True,
+        trim_overlay_to_alpha_bounds=False,
         # 🆕 NEW PARAMETERS
         shadow_angle=135,  # Light direction (135 = top-left, 45 = top-right)
         shadow_distance=30,  # How far shadow extends
@@ -610,6 +626,8 @@ class ImageProcessingService:
         # -----------------------------
         background = Image.open(background_path).convert("RGB")
         overlay = Image.open(overlay_path).convert("RGBA")
+        if trim_overlay_to_alpha_bounds:
+            overlay = self._trim_rgba_to_alpha_bounds(overlay)
 
         # -----------------------------
         # 2️⃣ Resize background without distortion
