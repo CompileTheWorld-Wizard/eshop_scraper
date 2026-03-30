@@ -1144,7 +1144,7 @@ def composite_images(
             trim_overlay_to_alpha_bounds=(
                 request.trim_overlay_to_alpha_bounds
                 if request.trim_overlay_to_alpha_bounds is not None
-                else True
+                else False
             ),
         )
         

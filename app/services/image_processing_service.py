@@ -27,6 +27,7 @@ import numpy as np
 from app.logging_config import get_logger
 from app.utils.supabase_utils import supabase_manager
 from app.config import settings
+from app.services.merging_service import merging_service
 from app.utils.task_management import create_task, get_task_status, complete_task, fail_task, start_task, TaskType, TaskStatus, task_manager
 
 logger = get_logger(__name__)
@@ -41,6 +42,17 @@ RETRY_DELAY = 5  # Seconds to wait between retries
 # Remove.bg API configuration
 REMOVEBG_API_KEY = os.getenv("REMOVEBG_API_KEY", "")
 REMOVEBG_API_URL = "https://api.remove.bg/v1.0/removebg"
+
+# Scene2 (merge-with-video): image watermark for plans with watermark_enabled (e.g. free)
+SCENE2_WATERMARK_IMAGE_URL = (
+    "https://hdixvjydwaslnzyrokrd.supabase.co/storage/v1/object/public/"
+    "generated-content/watermark.png"
+)
+SCENE2_WM_TOP = 20
+SCENE2_WM_LEFT = 40
+SCENE2_WM_HEIGHT = 64
+SCENE2_WM_MAX_WIDTH = 320
+SCENE2_WM_OPACITY = 0.7
 
 
 class ImageProcessingService:
@@ -489,7 +501,7 @@ class ImageProcessingService:
         overlay_size: Optional[Tuple[int, int]] = None,
         shadow_canvas_padding: int = 0,
         add_reflection: bool = True,
-        trim_overlay_to_alpha_bounds: bool = True,
+        trim_overlay_to_alpha_bounds: bool = False,
     ) -> Dict[str, Any]:
         """
         Composite two images together (overlay on top of background).
@@ -505,7 +517,7 @@ class ImageProcessingService:
             overlay_size: Optional (max_width, max_height) in pixels; when set, overrides overlay_rate for sizing
             shadow_canvas_padding: Extra pixels on each side so cast shadow/reflection are not cropped (0 = may crop)
             add_reflection: Whether to add reflection effect below the overlay (default: True)
-            trim_overlay_to_alpha_bounds: Crop overlay to non-transparent bbox before layout (default: True)
+            trim_overlay_to_alpha_bounds: Crop overlay to non-transparent bbox before layout (default: False)
 
         Returns:
             Dict containing:
@@ -1355,6 +1367,7 @@ class ImageProcessingService:
         temp_video_path = None
         temp_output_path = None
         temp_shadow_product_path = None
+        temp_watermarked_path = None
         
         try:
             print("\n" + "="*80)
@@ -1422,13 +1435,28 @@ class ImageProcessingService:
             logger.info("[Scene2] Step 4/6: Merging product with video (OpenCV) - done | path=%s", temp_output_path)
             logger.info("✅ Video merge completed: %s", temp_output_path)
 
+            video_for_upload = temp_output_path
+            if merging_service.user_requires_watermark_by_plan(user_id):
+                logger.info("[Scene2] Plan requires watermark; burning image watermark for user_id=%s", user_id)
+                try:
+                    temp_watermarked_path = self._burn_scene2_watermark(temp_output_path)
+                    video_for_upload = temp_watermarked_path
+                except Exception as wm_err:
+                    logger.warning(
+                        "[Scene2] Watermark burn failed, uploading without watermark: %s",
+                        wm_err,
+                        exc_info=True,
+                    )
+            else:
+                logger.info("[Scene2] Paid plan — no scene2 image watermark for user_id=%s", user_id)
+
             # Step 5: Upload to Supabase storage
             logger.info("[Scene2] Step 5/6: Uploading merged video to Supabase - started")
             print("\n☁️  STEP 5/6: Uploading Merged Video to Supabase")
             print("-" * 80)
             logger.info("📤 Uploading video to Supabase storage...")
             video_url = self._upload_video_to_supabase(
-                temp_output_path,
+                video_for_upload,
                 scene_id=scene_id,
                 user_id=user_id
             )
@@ -1474,7 +1502,7 @@ class ImageProcessingService:
         
         finally:
             # Clean up temporary files
-            for temp_path in [temp_product_path, temp_video_path, temp_output_path, temp_shadow_product_path]:
+            for temp_path in [temp_product_path, temp_video_path, temp_output_path, temp_shadow_product_path, temp_watermarked_path]:
                 if temp_path and os.path.exists(temp_path):
                     try:
                         os.unlink(temp_path)
@@ -1921,6 +1949,98 @@ class ImageProcessingService:
             raise Exception("FFmpeg conversion timed out after 5 minutes")
         except Exception as e:
             raise Exception(f"FFmpeg conversion failed: {e}")
+
+    def _build_scene2_watermark_overlay(self, downloaded_path: str) -> Tuple[str, int, int]:
+        """
+        Resize watermark (height=64, width auto capped at 320), apply opacity 0.7,
+        and approximate CSS multi drop-shadow via stacked blurred silhouettes.
+        Returns (overlay_png_path, pad_left, pad_top) for aligning overlay at SCENE2_WM_LEFT/TOP.
+        """
+        img = Image.open(downloaded_path).convert("RGBA")
+        if img.height <= 0:
+            raise ValueError("Invalid watermark image height")
+        scale = SCENE2_WM_HEIGHT / float(img.height)
+        nw = int(round(img.width * scale))
+        nw = max(1, min(nw, SCENE2_WM_MAX_WIDTH))
+        nh = SCENE2_WM_HEIGHT
+        img = img.resize((nw, nh), Image.Resampling.LANCZOS)
+        r, g, b, a = img.split()
+        a_adj = a.point(lambda p: int(min(255, round(p * SCENE2_WM_OPACITY))))
+        img = Image.merge("RGBA", (r, g, b, a_adj))
+        shape = img.split()[3]
+
+        # Padding so soft blur tails are not clipped; logo top-left in canvas = (pad_l, pad_t)
+        pad_l, pad_t, pad_r, pad_b = 16, 10, 44, 44
+        cw = nw + pad_l + pad_r
+        ch = nh + pad_t + pad_b
+        canvas = Image.new("RGBA", (cw, ch), (0, 0, 0, 0))
+        ox, oy = pad_l, pad_t
+
+        # Soft stacked glow (same CSS intent as before): wide blur + lower alpha so edges
+        # are not harsh; inner layer stays subtle instead of a dark rim.
+        shadow_specs = [
+            (22, 0, 0, 0.28),
+            (14, 0, 2, 0.32),
+            (6, 0, 1, 0.28),
+        ]
+        for blur_r, dx, dy, strength in shadow_specs:
+            layer_alpha = shape.point(lambda p, s=strength: int(min(255, round(p * s))))
+            shadow = Image.new("RGBA", (nw, nh), (0, 0, 0, 0))
+            shadow.putalpha(layer_alpha)
+            shadow = shadow.filter(ImageFilter.GaussianBlur(blur_r))
+            canvas.alpha_composite(shadow, (ox + dx, oy + dy))
+
+        canvas.alpha_composite(img, (ox, oy))
+
+        out_path = str(self._temp_dir / f"scene2-wm-overlay-{uuid.uuid4()}.png")
+        canvas.save(out_path, "PNG")
+        return out_path, pad_l, pad_t
+
+    def _burn_scene2_watermark(self, video_path: str) -> str:
+        """Overlay prepared PNG watermark on video via FFmpeg (H.264, no audio)."""
+        wm_dl = None
+        wm_png = None
+        try:
+            wm_dl = self._download_image_from_url(SCENE2_WATERMARK_IMAGE_URL)
+            wm_png, pad_l, pad_t = self._build_scene2_watermark_overlay(wm_dl)
+            out_path = str(self._temp_dir / f"scene2-wm-video-{uuid.uuid4()}.mp4")
+            ox = SCENE2_WM_LEFT - pad_l
+            oy = SCENE2_WM_TOP - pad_t
+            cmd = [
+                "ffmpeg",
+                "-y",
+                "-i",
+                video_path,
+                "-i",
+                wm_png,
+                "-filter_complex",
+                f"[0:v][1:v]overlay={ox}:{oy}:format=auto",
+                "-c:v",
+                "libx264",
+                "-preset",
+                "slow",
+                "-crf",
+                "18",
+                "-pix_fmt",
+                "yuv420p",
+                "-movflags",
+                "+faststart",
+                out_path,
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            if result.returncode != 0:
+                raise Exception(result.stderr or "FFmpeg watermark overlay failed")
+            if not os.path.exists(out_path):
+                raise Exception("Watermarked video was not created")
+            logger.info("[Scene2] Watermark overlay written to %s", out_path)
+            return out_path
+        finally:
+            for p in (wm_dl, wm_png):
+                if p and os.path.exists(p):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
 
     def _upload_video_to_supabase(
         self,

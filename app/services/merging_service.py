@@ -1354,6 +1354,15 @@ class MergingService:
             logger.error(f"Failed to get watermark setting for plan '{plan_name}': {e}")
             return True  # Default to watermark enabled if error
 
+    def user_requires_watermark_by_plan(self, user_id: str) -> bool:
+        """True when the user's plan has watermark_enabled (e.g. free tier)."""
+        try:
+            plan = self._get_user_plan(user_id)
+            return self._get_plan_watermark_setting(plan)
+        except Exception as e:
+            logger.error(f"user_requires_watermark_by_plan failed for {user_id}: {e}")
+            return True
+
     def _add_watermark_to_video(self, video_path: str, task_id: str) -> str:
         """Add watermark to video using FFmpeg."""
         try:

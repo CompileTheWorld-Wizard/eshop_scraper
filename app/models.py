@@ -310,10 +310,9 @@ class ImageCompositeRequest(BaseModel):
     shadow_canvas_padding: Optional[int] = Field(0, description="Extra pixels on each side of the canvas so cast shadow and reflection are not cropped. 0 = original behavior (shadow may be clipped). e.g. 120 for full shadow.")
     add_reflection: Optional[bool] = Field(True, description="Whether to add a soft reflection of the overlay below the product (mirror-like effect).")
     trim_overlay_to_alpha_bounds: Optional[bool] = Field(
-        True,
-        description="Crop the overlay to the tight bounding box of non-transparent pixels before resize/position. "
-        "Use True when cutout PNGs include large empty margins so position_x/position_y anchor the visible product. "
-        "Set False if the asset relies on intentional transparent padding.",
+        False,
+        description="When True, crop the overlay to the tight bounding box of non-transparent pixels before resize/position. "
+        "Default False: use the overlay as uploaded (transparent margins preserved for layout and preview alignment).",
     )
 
 
