@@ -411,6 +411,18 @@ class MergeImageWithVideoRequest(BaseModel):
     position: str = Field(default="center", description="Position (center, top, bottom, left, right)")
     duration: int = Field(default=8, description="Video duration in seconds")
     add_animation: bool = Field(default=True, description="Add zoom/floating animation")
+    position_anchor_x: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional horizontal anchor 0–1 (product center). If either anchor is set, anchors are used and the other axis defaults to 0.5 when omitted.",
+    )
+    position_anchor_y: Optional[float] = Field(
+        default=None,
+        ge=0.0,
+        le=1.0,
+        description="Optional vertical anchor 0–1 (product center). See position_anchor_x.",
+    )
 
 
 class MergeImageWithVideoResponse(BaseModel):

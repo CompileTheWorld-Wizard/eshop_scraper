@@ -2017,7 +2017,14 @@ def merge_image_with_video(
     2. Composite the product onto the video with optional animations (zoom, floating)
     3. Upload the merged video to Supabase storage
     4. Update the scene's generated_video_url in the database
-    
+
+    Orientation: If the background video is portrait (height > width), the output is 9:16
+    (width capped, e.g. 1080×1920) with a center crop on each frame (cover / fill). Landscape
+    backgrounds remain 1920×1080.
+
+    Optional `position_anchor_x` / `position_anchor_y` (0–1) place the product by normalized
+    coordinates; when omitted, `position` (center, top, …) is used.
+
     Animation features:
     - Zoom animation: Product zooms from 5% to target scale over 3 seconds
     - Floating animation: Gentle up-down movement after zoom completes
@@ -2038,7 +2045,7 @@ def merge_image_with_video(
         print("📨 NEW SCENE2 VIDEO MERGE REQUEST RECEIVED (ASYNC)")
         print("🔔 "*40)
         logger.info(
-            "[Scene2] REQUEST | scene_id=%s user_id=%s | product_image=%s | background_video=%s | scale=%s position=%s duration=%s animation=%s",
+            "[Scene2] REQUEST | scene_id=%s user_id=%s | product_image=%s | background_video=%s | scale=%s position=%s duration=%s animation=%s anchor=(%s,%s)",
             request.scene_id,
             request.user_id,
             request.product_image_url[:60] + "..." if len(request.product_image_url) > 60 else request.product_image_url,
@@ -2047,6 +2054,8 @@ def merge_image_with_video(
             request.position,
             request.duration,
             request.add_animation,
+            request.position_anchor_x,
+            request.position_anchor_y,
         )
         
         # Validate required fields
@@ -2100,7 +2109,9 @@ def merge_image_with_video(
             scale=request.scale,
             position=request.position,
             duration=request.duration,
-            add_animation=request.add_animation
+            add_animation=request.add_animation,
+            position_anchor_x=request.position_anchor_x,
+            position_anchor_y=request.position_anchor_y,
         )
         
         logger.info(f"✅ Started async merge task {result['task_id']} for scene {request.scene_id}")

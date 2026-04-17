@@ -54,6 +54,37 @@ SCENE2_WM_HEIGHT = 64
 SCENE2_WM_MAX_WIDTH = 320
 SCENE2_WM_OPACITY = 0.7
 
+# Scene2 merge: landscape output (legacy); portrait uses 9:16 with width capped below
+SCENE2_LANDSCAPE_WIDTH = 1920
+SCENE2_LANDSCAPE_HEIGHT = 1080
+SCENE2_PORTRAIT_MAX_WIDTH = 1080  # 9:16 output e.g. 1080x1920; taller sources (e.g. 2160x4096) use cover crop
+
+
+def _even_dimension(n: int) -> int:
+    return max(2, (int(n) // 2) * 2)
+
+
+def _portrait_9_16_dimensions(source_width: int, source_height: int) -> Tuple[int, int]:
+    """Pick output width/height in 9:16 (portrait), capped for sane file size."""
+    w = min(SCENE2_PORTRAIT_MAX_WIDTH, max(2, source_width))
+    w = _even_dimension(w)
+    h = _even_dimension(int(round(w * 16 / 9)))
+    return w, h
+
+
+def _cover_crop_frame_to_size(frame: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    """Scale uniformly so the frame fully covers out_w×out_h, then center-crop (object-fit: cover)."""
+    sh, sw = frame.shape[0], frame.shape[1]
+    if sw <= 0 or sh <= 0:
+        return frame
+    scale = max(out_w / sw, out_h / sh)
+    nw = max(1, int(round(sw * scale)))
+    nh = max(1, int(round(sh * scale)))
+    resized = cv2.resize(frame, (nw, nh), interpolation=cv2.INTER_LANCZOS4)
+    x0 = max(0, (nw - out_w) // 2)
+    y0 = max(0, (nh - out_h) // 2)
+    return resized[y0 : y0 + out_h, x0 : x0 + out_w]
+
 
 class ImageProcessingService:
     """Service for processing images including background removal and compositing."""
@@ -1132,7 +1163,9 @@ class ImageProcessingService:
         scale: float = 0.4,
         position: str = "center",
         duration: Optional[int] = None,
-        add_animation: bool = True
+        add_animation: bool = True,
+        position_anchor_x: Optional[float] = None,
+        position_anchor_y: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Start an async image-video merge task (Scene2 generation).
@@ -1145,9 +1178,11 @@ class ImageProcessingService:
             user_id: User ID
             short_id: Short ID (for task creation)
             scale: Product scale relative to video width
-            position: Product position on video
+            position: Product position on video (used when anchor fields are unset)
             duration: Optional duration in seconds
             add_animation: Whether to add animations
+            position_anchor_x: Optional 0–1 horizontal anchor for product center (overrides `position` when set)
+            position_anchor_y: Optional 0–1 vertical anchor for product center (overrides `position` when set)
             
         Returns:
             Dict with task_id, status, and message
@@ -1182,7 +1217,9 @@ class ImageProcessingService:
                     scale,
                     position,
                     duration,
-                    add_animation
+                    add_animation,
+                    position_anchor_x,
+                    position_anchor_y,
                 ),
                 daemon=True,
                 name=f"image_merge_{task_id}"
@@ -1217,7 +1254,9 @@ class ImageProcessingService:
         scale: float,
         position: str,
         duration: Optional[int],
-        add_animation: bool
+        add_animation: bool,
+        position_anchor_x: Optional[float] = None,
+        position_anchor_y: Optional[float] = None,
     ):
         """
         Background worker that processes the image-video merge.
@@ -1239,7 +1278,9 @@ class ImageProcessingService:
                 scale=scale,
                 position=position,
                 duration=duration,
-                add_animation=add_animation
+                add_animation=add_animation,
+                position_anchor_x=position_anchor_x,
+                position_anchor_y=position_anchor_y,
             )
             
             # Update task based on result
@@ -1337,6 +1378,8 @@ class ImageProcessingService:
         position: str = "center",
         duration: Optional[int] = None,
         add_animation: bool = True,
+        position_anchor_x: Optional[float] = None,
+        position_anchor_y: Optional[float] = None,
         add_shadow: bool = True,  # New parameter
         shadow_blur_radius: int = 25,  # New parameter for shadow blur
         shadow_offset: Tuple[int, int] = (15, 15)  # New parameter for shadow offset
@@ -1350,7 +1393,9 @@ class ImageProcessingService:
             scene_id: Scene ID for organizing files and updating database
             user_id: User ID for organizing files
             scale: Scale of product relative to video width (default: 0.4 = 40%)
-            position: Position of product ("center", "top", "bottom", "left", "right")
+            position: Position of product ("center", "top", "bottom", "left", "right") when anchors unset
+            position_anchor_x: Optional 0–1 horizontal anchor for product center (overrides position if set)
+            position_anchor_y: Optional 0–1 vertical anchor for product center (overrides position if set)
             duration: Optional duration in seconds (if None, uses full video duration)
             add_animation: Whether to add zoom and floating animations
             add_shadow: Whether to add shadow effect to the product
@@ -1374,8 +1419,18 @@ class ImageProcessingService:
             print("🎬 SCENE 2 GENERATION - VIDEO MERGE STARTED")
             print("="*80)
             logger.info("[Scene2] START | scene_id=%s user_id=%s", scene_id, user_id)
-            logger.info("[Scene2] Parameters: scale=%s position=%s duration=%s animation=%s shadow=%s blur=%s offset=%s",
-                       scale, position, duration, add_animation, add_shadow, shadow_blur_radius if add_shadow else None, shadow_offset if add_shadow else None)
+            logger.info(
+                "[Scene2] Parameters: scale=%s position=%s anchor=(%s,%s) duration=%s animation=%s shadow=%s blur=%s offset=%s",
+                scale,
+                position,
+                position_anchor_x,
+                position_anchor_y,
+                duration,
+                add_animation,
+                add_shadow,
+                shadow_blur_radius if add_shadow else None,
+                shadow_offset if add_shadow else None,
+            )
             logger.info("🚀 Starting image-video merge for scene %s", scene_id)
             logger.info("📦 Parameters: Scene ID=%s, User ID=%s, Scale=%s%%, Position=%s, Duration=%s, Animation=%s, Shadow=%s",
                        scene_id, user_id, round(scale * 100), position, duration, add_animation, add_shadow)
@@ -1424,13 +1479,15 @@ class ImageProcessingService:
             print("\n🎨 STEP 4/6: Merging Product with Video (OpenCV Processing)")
             print("-" * 80)
             logger.info("🔄 Starting OpenCV video processing...")
-            temp_output_path = self._merge_with_opencv(
+            temp_output_path, out_w, out_h = self._merge_with_opencv(
                 product_path_for_merge,  # Use shadow-enhanced image if shadow was added
                 temp_video_path,
                 scale=scale,
                 position=position,
                 duration=duration,
-                add_animation=add_animation
+                add_animation=add_animation,
+                position_anchor_x=position_anchor_x,
+                position_anchor_y=position_anchor_y,
             )
             logger.info("[Scene2] Step 4/6: Merging product with video (OpenCV) - done | path=%s", temp_output_path)
             logger.info("✅ Video merge completed: %s", temp_output_path)
@@ -1439,7 +1496,9 @@ class ImageProcessingService:
             if merging_service.user_requires_watermark_by_plan(user_id):
                 logger.info("[Scene2] Plan requires watermark; burning image watermark for user_id=%s", user_id)
                 try:
-                    temp_watermarked_path = self._burn_scene2_watermark(temp_output_path)
+                    temp_watermarked_path = self._burn_scene2_watermark(
+                        temp_output_path, frame_width=out_w, frame_height=out_h
+                    )
                     video_for_upload = temp_watermarked_path
                 except Exception as wm_err:
                     logger.warning(
@@ -1670,131 +1729,137 @@ class ImageProcessingService:
         scale: float = 0.4,
         position: str = "center",
         duration: Optional[int] = None,
-        add_animation: bool = True
-    ) -> str:
+        add_animation: bool = True,
+        position_anchor_x: Optional[float] = None,
+        position_anchor_y: Optional[float] = None,
+    ) -> Tuple[str, int, int]:
         """
         Merge product image with background video using OpenCV.
-        
-        Args:
-            product_path: Path to product image (PNG with transparency)
-            video_path: Path to background video
-            scale: Scale of product relative to video width
-            position: Position of product on video
-            duration: Optional duration limit in seconds
-            add_animation: Whether to add zoom and floating animations
-        
+
+        Portrait backgrounds (height > width): output stays 9:16; frames use center crop
+        (cover / fill). Landscape: output 1920x1080, per-frame resize as before.
+
         Returns:
-            Path to the output video file
+            (path to the output MP4, frame width, frame height)
         """
         try:
-            # Open video
             cap = cv2.VideoCapture(video_path)
             if not cap.isOpened():
                 raise Exception("Cannot open video file")
-            
-            fps = cap.get(cv2.CAP_PROP_FPS)
+
+            fps_raw = cap.get(cv2.CAP_PROP_FPS)
+            fps = fps_raw if fps_raw and fps_raw > 1e-3 else 30.0
             original_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             original_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            
-            # Force output to 1920x1080 for high quality
-            width = 1920
-            height = 1080
-            
-            # Limit duration if specified
+
+            portrait_source = original_height > original_width
+            if portrait_source:
+                width, height = _portrait_9_16_dimensions(original_width, original_height)
+                logger.info(
+                    "[Scene2] Portrait background detected — output 9:16 at %sx%s (cover crop from source)",
+                    width,
+                    height,
+                )
+            else:
+                width, height = SCENE2_LANDSCAPE_WIDTH, SCENE2_LANDSCAPE_HEIGHT
+                logger.info("[Scene2] Landscape background — output %sx%s", width, height)
+
             if duration:
                 max_frames = int(fps * duration)
                 total_frames = min(total_frames, max_frames)
                 logger.info(f"⏱️  Duration limited to {duration}s ({max_frames} frames)")
-            
-            video_duration = total_frames / fps
+
+            video_duration = total_frames / fps if fps > 0 else 0.0
             logger.info(f"📹 Input Video Info:")
             logger.info(f"   - Original Resolution: {original_width}x{original_height}")
-            logger.info(f"   - Output Resolution: {width}x{height} (1080p HD)")
+            logger.info(f"   - Output Resolution: {width}x{height}")
             logger.info(f"   - FPS: {fps}")
             logger.info(f"   - Total Frames: {total_frames}")
             logger.info(f"   - Duration: {video_duration:.2f}s")
-            
-            # Load product image (PIL gives RGB; OpenCV uses BGR — convert so product colors match video)
+
             product_img = Image.open(product_path).convert("RGBA")
             product_np = np.array(product_img)
-            # PIL RGBA = R,G,B,A; OpenCV frame = B,G,R. Convert product to BGRA so compositing doesn't swap R/B.
             product_np = product_np[:, :, [2, 1, 0, 3]]
 
             logger.info(f"🖼️  Product Image: {product_np.shape[1]}x{product_np.shape[0]} pixels")
-            
-            # Create output video - use temp AVI first for better compatibility
+
             temp_output_path = str(self._temp_dir / f"merged-temp-{uuid.uuid4()}.avi")
             output_path = str(self._temp_dir / f"merged-video-{uuid.uuid4()}.mp4")
-            
-            # Use MJPEG codec for AVI (more reliable than mp4v)
+
             fourcc = cv2.VideoWriter_fourcc(*'MJPG')
             out = cv2.VideoWriter(temp_output_path, fourcc, fps, (width, height))
-            
+
             logger.info(f"💾 Temp output file: {temp_output_path}")
             logger.info(f"💾 Final output file: {output_path}")
-            
-            # Animation parameters
+
             zoom_duration = 3.0 if add_animation else 0.0
             min_scale = 0.05 if add_animation else scale
-            
+
             if add_animation:
                 logger.info(f"✨ Animation enabled:")
                 logger.info(f"   - Zoom: {min_scale*100}% → {scale*100}% over {zoom_duration}s")
                 logger.info(f"   - Floating: ±30px sine wave after zoom")
-            
-            # Process frames
+
+            use_anchor_mode = (
+                position_anchor_x is not None or position_anchor_y is not None
+            )
+            anchor_ax = 0.5 if position_anchor_x is None else position_anchor_x
+            anchor_ay = 0.5 if position_anchor_y is None else position_anchor_y
+            is_portrait_output = height > width
+
             frame_idx = 0
             smooth_x, smooth_y = None, None
             smooth_factor = 0.08
             last_log_time = 0
-            
-            if original_width != width or original_height != height:
-                logger.info(f"🔄 Each frame will be upscaled: {original_width}x{original_height} → {width}x{height}")
-            
+
+            log_interval = max(1, int(fps * 2)) if fps > 0 else 1
+
             logger.info(f"🎬 Starting frame processing...")
             print(f"   Progress: [", end="", flush=True)
-            
+
             while frame_idx < total_frames:
                 ret, frame = cap.read()
                 if not ret:
                     break
-                
-                # Resize frame to 1920x1080 if needed
-                if frame.shape[1] != width or frame.shape[0] != height:
-                    frame = cv2.resize(frame, (width, height), interpolation=cv2.INTER_LANCZOS4)
-                
-                t = frame_idx / fps
-                
-                # Calculate scale with zoom animation
+
+                if portrait_source:
+                    frame = _cover_crop_frame_to_size(frame, width, height)
+                else:
+                    if frame.shape[1] != width or frame.shape[0] != height:
+                        frame = cv2.resize(
+                            frame, (width, height), interpolation=cv2.INTER_LANCZOS4
+                        )
+
+                t = frame_idx / fps if fps > 0 else 0.0
+
                 if add_animation and t < zoom_duration:
-                    # Ease-out zoom animation
                     progress = t / zoom_duration
                     eased = 1 - (1 - progress) ** 3
                     current_scale = min_scale + eased * (scale - min_scale)
                 else:
                     current_scale = scale
-                
-                # Calculate product size (cap to frame so overlay always fits)
+
                 product_w = max(1, min(width, int(width * current_scale)))
                 ratio = product_w / product_np.shape[1]
                 product_h = max(1, min(height, int(product_np.shape[0] * ratio)))
-                
-                # Resize product
-                product_resized = cv2.resize(product_np, (product_w, product_h), 
-                                            interpolation=cv2.INTER_AREA)
-                
-                # Calculate position with optional floating animation
+
+                product_resized = cv2.resize(
+                    product_np, (product_w, product_h), interpolation=cv2.INTER_AREA
+                )
+
                 dy = 0
                 if add_animation and t >= zoom_duration:
-                    # Floating animation
                     phase = t - zoom_duration
                     dy = int(30 * math.sin(phase * 0.8))
-                
-                # Position based on parameter
-                if position == "center":
+
+                if use_anchor_mode:
+                    target_x = int(width * anchor_ax - product_w // 2)
+                    target_y = int(height * anchor_ay - product_h // 2 + dy)
+                elif position == "center":
                     target_x = width // 2 - product_w // 2
-                    target_y = int(height * 0.52 - product_h // 2 + dy)
+                    center_y_frac = 0.5 if is_portrait_output else 0.52
+                    target_y = int(height * center_y_frac - product_h // 2 + dy)
                 elif position == "top":
                     target_x = width // 2 - product_w // 2
                     target_y = int(height * 0.2 + dy)
@@ -1803,64 +1868,55 @@ class ImageProcessingService:
                     target_y = int(height * 0.8 - product_h + dy)
                 elif position == "left":
                     target_x = int(width * 0.2)
-                    target_y = int(height * 0.52 - product_h // 2 + dy)
+                    target_y = int(height * (0.5 if is_portrait_output else 0.52) - product_h // 2 + dy)
                 elif position == "right":
                     target_x = int(width * 0.8 - product_w)
-                    target_y = int(height * 0.52 - product_h // 2 + dy)
+                    target_y = int(height * (0.5 if is_portrait_output else 0.52) - product_h // 2 + dy)
                 else:
                     target_x = width // 2 - product_w // 2
-                    target_y = int(height * 0.52 - product_h // 2 + dy)
-                
-                # Smooth position transition
+                    center_y_frac = 0.5 if is_portrait_output else 0.52
+                    target_y = int(height * center_y_frac - product_h // 2 + dy)
+
                 if smooth_x is None:
                     smooth_x, smooth_y = target_x, target_y
                 smooth_x += (target_x - smooth_x) * smooth_factor
                 smooth_y += (target_y - smooth_y) * smooth_factor
-                
+
                 x = int(smooth_x)
                 y = int(smooth_y)
-                
-                # Ensure product stays within frame
+
                 x = max(0, min(width - product_w, x))
                 y = max(0, min(height - product_h, y))
-                
-                # Clip blend region to frame bounds (product may be taller/wider than frame)
+
                 actual_h = min(product_h, height - y)
                 actual_w = min(product_w, width - x)
                 if actual_h <= 0 or actual_w <= 0:
                     out.write(frame)
                     frame_idx += 1
                     continue
-                
-                # Composite product onto frame using alpha channel (slices must match shape)
+
                 alpha = product_resized[:actual_h, :actual_w, 3] / 255.0
                 for c in range(3):
                     frame[y:y+actual_h, x:x+actual_w, c] = (
                         frame[y:y+actual_h, x:x+actual_w, c] * (1 - alpha)
                         + product_resized[:actual_h, :actual_w, c] * alpha
                     )
-                
-                # Write frame
+
                 out.write(frame)
                 frame_idx += 1
-                
-                # Log progress - show progress bar
-                progress_pct = (frame_idx / total_frames) * 100
-                
-                # Update progress bar every 5%
+
+                progress_pct = (frame_idx / total_frames) * 100 if total_frames else 100
+
                 if progress_pct >= last_log_time + 5 or frame_idx == total_frames:
                     last_log_time = progress_pct
                     bar_length = int(progress_pct / 5)
                     print("=" * bar_length, end="", flush=True)
-                
-                # Detailed logging every 2 seconds
-                if frame_idx % int(fps * 2) == 0 or frame_idx == total_frames:
-                    elapsed_time = frame_idx / fps
+
+                if frame_idx % log_interval == 0 or frame_idx == total_frames:
+                    elapsed_time = frame_idx / fps if fps > 0 else 0
                     remaining_frames = total_frames - frame_idx
                     estimated_remaining = remaining_frames / fps if fps > 0 else 0
-                    
                     phase = "ZOOM" if (add_animation and elapsed_time < zoom_duration) else "FLOAT"
-                    
                     logger.info(
                         f"   Frame {frame_idx}/{total_frames} | "
                         f"{progress_pct:.1f}% | "
@@ -1868,81 +1924,93 @@ class ImageProcessingService:
                         f"Phase: {phase} | "
                         f"ETA: {estimated_remaining:.1f}s"
                     )
-            
+
             print("] 100%")
-            
+
             cap.release()
             out.release()
-            
+
             logger.info(f"✅ OpenCV processing complete")
             logger.info(f"💾 Temp AVI saved to: {temp_output_path}")
-            
-            # Convert to H.264 MP4 using FFmpeg for better compatibility
+
             logger.info(f"🎞️  Converting to H.264 MP4 with FFmpeg...")
-            self._convert_to_h264(temp_output_path, output_path)
-            
-            # Clean up temp AVI file
+            self._convert_to_h264(temp_output_path, output_path, width, height)
+
             try:
                 os.unlink(temp_output_path)
                 logger.info(f"🗑️  Cleaned up temp AVI file")
             except Exception as e:
                 logger.warning(f"Failed to clean up temp file: {e}")
-            
+
             logger.info(f"💾 Final MP4 saved to: {output_path}")
-            return output_path
-            
+            return output_path, width, height
+
         except Exception as e:
             raise Exception(f"Failed to merge video with OpenCV: {e}")
 
-    def _convert_to_h264(self, input_path: str, output_path: str):
+    def _convert_to_h264(
+        self, input_path: str, output_path: str, width: int, height: int
+    ):
         """
         Convert video to H.264 MP4 format using FFmpeg for maximum compatibility.
-        
+
         Args:
             input_path: Path to input video (AVI)
             output_path: Path to output video (MP4)
+            width: Target width (pixels)
+            height: Target height (pixels)
         """
         try:
-            # FFmpeg command for high-quality H.264 encoding at 1920x1080
+            w, h = int(width), int(height)
+            vf = (
+                f"scale={w}:{h}:force_original_aspect_ratio=decrease,"
+                f"pad={w}:{h}:(ow-iw)/2:(oh-ih)/2"
+            )
+            pixels = w * h
+            if pixels <= SCENE2_LANDSCAPE_WIDTH * SCENE2_LANDSCAPE_HEIGHT:
+                b_v, max_v, buf = "8M", "10M", "16M"
+            else:
+                b_v, max_v, buf = "12M", "15M", "24M"
+
             cmd = [
                 'ffmpeg',
                 '-i', input_path,
-                '-vf', 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2',  # Ensure 1920x1080
-                '-c:v', 'libx264',          # H.264 video codec
-                '-preset', 'slow',           # Better quality (slow = higher quality)
-                '-crf', '18',                # High quality (18 = visually lossless)
-                '-profile:v', 'high',        # H.264 high profile for better compression
-                '-level', '4.2',             # H.264 level 4.2
-                '-pix_fmt', 'yuv420p',      # Pixel format for compatibility
-                '-movflags', '+faststart',   # Enable fast start for web streaming
-                '-b:v', '8M',                # 8 Mbps bitrate for high quality 1080p
-                '-maxrate', '10M',           # Max bitrate
-                '-bufsize', '16M',           # Buffer size
-                '-y',                        # Overwrite output file
+                '-vf', vf,
+                '-c:v', 'libx264',
+                '-preset', 'slow',
+                '-crf', '18',
+                '-profile:v', 'high',
+                '-level', '4.2',
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                '-b:v', b_v,
+                '-maxrate', max_v,
+                '-bufsize', buf,
+                '-y',
                 output_path
             ]
-            
+
             logger.info(f"🎞️  FFmpeg Quality Settings:")
-            logger.info(f"   - Resolution: 1920x1080 (forced)")
+            logger.info(f"   - Resolution: {w}x{h} (forced)")
             logger.info(f"   - Codec: H.264 High Profile")
-            logger.info(f"   - Bitrate: 8Mbps (high quality)")
+            logger.info(f"   - Bitrate: {b_v} (target)")
             logger.info(f"   - CRF: 18 (visually lossless)")
             logger.info(f"   - Preset: slow (higher quality)")
             logger.debug(f"FFmpeg command: {' '.join(cmd)}")
-            
+
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300  # 5 minute timeout
+                timeout=300
             )
-            
+
             if result.returncode != 0:
                 logger.error(f"FFmpeg stderr: {result.stderr}")
                 raise Exception(f"FFmpeg conversion failed with code {result.returncode}")
-            
+
             logger.info(f"✅ FFmpeg conversion complete")
-            
+
         except FileNotFoundError:
             raise Exception("FFmpeg not found! Please install FFmpeg: https://ffmpeg.org/download.html")
         except subprocess.TimeoutExpired:
@@ -1996,7 +2064,12 @@ class ImageProcessingService:
         canvas.save(out_path, "PNG")
         return out_path, pad_l, pad_t
 
-    def _burn_scene2_watermark(self, video_path: str) -> str:
+    def _burn_scene2_watermark(
+        self,
+        video_path: str,
+        frame_width: int = SCENE2_LANDSCAPE_WIDTH,
+        frame_height: int = SCENE2_LANDSCAPE_HEIGHT,
+    ) -> str:
         """Overlay prepared PNG watermark on video via FFmpeg (H.264, no audio)."""
         wm_dl = None
         wm_png = None
@@ -2004,8 +2077,10 @@ class ImageProcessingService:
             wm_dl = self._download_image_from_url(SCENE2_WATERMARK_IMAGE_URL)
             wm_png, pad_l, pad_t = self._build_scene2_watermark_overlay(wm_dl)
             out_path = str(self._temp_dir / f"scene2-wm-video-{uuid.uuid4()}.mp4")
-            ox = SCENE2_WM_LEFT - pad_l
-            oy = SCENE2_WM_TOP - pad_t
+            sx = frame_width / float(SCENE2_LANDSCAPE_WIDTH)
+            sy = frame_height / float(SCENE2_LANDSCAPE_HEIGHT)
+            ox = int(round(SCENE2_WM_LEFT * sx)) - pad_l
+            oy = int(round(SCENE2_WM_TOP * sy)) - pad_t
             cmd = [
                 "ffmpeg",
                 "-y",
