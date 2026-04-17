@@ -54,22 +54,16 @@ SCENE2_WM_HEIGHT = 64
 SCENE2_WM_MAX_WIDTH = 320
 SCENE2_WM_OPACITY = 0.7
 
-# Scene2 merge: landscape output (legacy); portrait uses 9:16 with width capped below
+# Scene2 merge: landscape output (legacy); portrait is fixed 1080×1920 (9:16)
 SCENE2_LANDSCAPE_WIDTH = 1920
 SCENE2_LANDSCAPE_HEIGHT = 1080
-SCENE2_PORTRAIT_MAX_WIDTH = 1080  # 9:16 output e.g. 1080x1920; taller sources (e.g. 2160x4096) use cover crop
+SCENE2_PORTRAIT_WIDTH = 1080
+SCENE2_PORTRAIT_HEIGHT = 1920
 
 
-def _even_dimension(n: int) -> int:
-    return max(2, (int(n) // 2) * 2)
-
-
-def _portrait_9_16_dimensions(source_width: int, source_height: int) -> Tuple[int, int]:
-    """Pick output width/height in 9:16 (portrait), capped for sane file size."""
-    w = min(SCENE2_PORTRAIT_MAX_WIDTH, max(2, source_width))
-    w = _even_dimension(w)
-    h = _even_dimension(int(round(w * 16 / 9)))
-    return w, h
+def _portrait_9_16_dimensions(_source_width: int, _source_height: int) -> Tuple[int, int]:
+    """Fixed 9:16 portrait output (1080×1920). Source dimensions ignored; cover-crop scales frames to fit."""
+    return SCENE2_PORTRAIT_WIDTH, SCENE2_PORTRAIT_HEIGHT
 
 
 def _cover_crop_frame_to_size(frame: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
@@ -1757,7 +1751,7 @@ class ImageProcessingService:
             if portrait_source:
                 width, height = _portrait_9_16_dimensions(original_width, original_height)
                 logger.info(
-                    "[Scene2] Portrait background detected — output 9:16 at %sx%s (cover crop from source)",
+                    "[Scene2] Portrait background — fixed output %sx%s (9:16, cover crop from source)",
                     width,
                     height,
                 )

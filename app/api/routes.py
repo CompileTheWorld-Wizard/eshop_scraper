@@ -2018,9 +2018,9 @@ def merge_image_with_video(
     3. Upload the merged video to Supabase storage
     4. Update the scene's generated_video_url in the database
 
-    Orientation: If the background video is portrait (height > width), the output is 9:16
-    (width capped, e.g. 1080×1920) with a center crop on each frame (cover / fill). Landscape
-    backgrounds remain 1920×1080.
+    Orientation: If the background video is portrait (height > width), the output is fixed
+    1080×1920 (9:16) with a center crop on each frame (cover / fill). Landscape backgrounds
+    remain 1920×1080.
 
     Optional `position_anchor_x` / `position_anchor_y` (0–1) place the product by normalized
     coordinates; when omitted, `position` (center, top, …) is used.
