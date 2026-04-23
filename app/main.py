@@ -17,6 +17,7 @@ from app.services.scheduler_service import start_scheduler, stop_scheduler
 from app.security import security_middleware, cleanup_security_data
 from app.logging_config import setup_logging, get_logger
 from app.utils import cleanup_windows_asyncio
+from app.services.platform_health import collect_platform_health
 
 # Setup comprehensive logging - this ensures logging is available
 # for all subsequent imports and operations. The setup_logging function
@@ -208,8 +209,20 @@ async def root():
     return {
         "message": "E-commerce Scraper API",
         "version": settings.VERSION,
-        "health": f"{settings.API_V1_STR}/health"
+        "health": "/health",
     }
+
+
+@app.get("/health")
+async def platform_health():
+    """
+    Platform health: scraping, remotion, scene2, background merge / generation,
+    audio, and video merge dependencies. Returns 200 when all checks pass;
+    503 with JSON listing unhealthy services otherwise.
+    """
+    payload = await collect_platform_health()
+    status_code = 200 if payload.get("ok") else 503
+    return JSONResponse(status_code=status_code, content=payload)
 
 @app.get("/ping")
 async def ping():

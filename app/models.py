@@ -79,10 +79,18 @@ class TaskStatisticsResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
+    """Response for GET /api/v1/health (in-process scraper stats)."""
     status: str
     version: str
     timestamp: datetime
-    services: Dict[str, str]
+    uptime: float = 0
+    memory_usage: float = 0
+    services: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-subsystem status labels (e.g. scraper: healthy)",
+    )
+    security_stats: Dict[str, Any] = Field(default_factory=dict)
+    task_stats: Dict[str, Any] = Field(default_factory=dict)
 
 class VideoGenerationRequest(BaseModel):
     scene_id: str = Field(..., description="UUID of the scene to generate video for")

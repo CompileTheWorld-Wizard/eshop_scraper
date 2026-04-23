@@ -199,14 +199,13 @@ def health_check():
             'failed_tasks': len([t for t in all_tasks.values() if t['status'] == TaskStatus.FAILED])
         }
         
-        # Get cache stats
-        
         health_response = HealthResponse(
             status="healthy",
             timestamp=datetime.now(),
             version=settings.VERSION,
             uptime=0,  # TODO: Implement uptime tracking
             memory_usage=0,  # TODO: Implement memory usage tracking
+            services={"scraper": "healthy"},
             security_stats=security_stats,
             task_stats=task_stats,
         )
