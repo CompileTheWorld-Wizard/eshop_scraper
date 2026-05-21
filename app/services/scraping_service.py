@@ -1338,8 +1338,10 @@ class ScrapingService:
             # Remove None values to avoid database errors
             product_data = {k: v for k, v in product_data.items() if v is not None}
                         
-            # Detect category using OpenAI before saving
-            detected_category_id = self._detect_category_with_openai(product_info)
+            # Try local category detection first; use OpenAI only when needed.
+            detected_category_id = self._detect_category_fast(product_info)
+            if not detected_category_id:
+                detected_category_id = self._detect_category_with_openai(product_info)
             if detected_category_id:
                 product_data["category_id"] = detected_category_id
                 logger.info(f"Detected category ID for product '{product_info.title}': {detected_category_id}")
@@ -1384,6 +1386,73 @@ class ScrapingService:
             logger.error(f"Error saving product to Supabase: {e}", exc_info=True)
             # Don't raise the exception to avoid breaking the scraping flow
             return None, None
+
+    def _get_sub_categories(self) -> List[Dict[str, Any]]:
+        """Get sub-categories from Supabase."""
+        from app.utils.supabase_utils import get_categories
+
+        categories = get_categories()
+        return [cat for cat in categories if cat.get('parent_id')] if categories else []
+
+    def _detect_category_fast(self, product_info) -> Optional[str]:
+        """Detect category locally without waiting for OpenAI."""
+        try:
+            sub_categories = self._get_sub_categories()
+            if not sub_categories:
+                logger.warning("No sub-categories found in database, skipping fast category detection")
+                return None
+
+            searchable_text = " ".join([
+                product_info.title or "",
+                product_info.description or "",
+                " ".join([f"{key} {value}" for key, value in (product_info.specifications or {}).items()]),
+            ]).lower()
+
+            synonym_hints = {
+                "outdoor recreation": ["motorrad", "motorcycle", "bike", "fahrrad", "scooter", "roller", "camping", "outdoor"],
+                "watches": ["uhr", "uhren", "armbanduhr", "automatikuhr", "watch", "watches"],
+                "jewelry": ["schmuck", "ring", "kette", "bracelet", "necklace"],
+                "automotive": ["auto", "car", "vehicle", "fahrzeug", "reifen"],
+                "electronics": ["elektronik", "smartphone", "laptop", "tablet", "kamera"],
+                "home": ["moebel", "möbel", "kueche", "küche", "sofa", "table", "chair"],
+                "fashion": ["mode", "shirt", "hose", "kleid", "jacke", "schuhe"],
+            }
+
+            best_match = None
+            best_score = 0
+
+            for category in sub_categories:
+                category_name = category.get("name", "")
+                normalized_name = category_name.lower()
+                score = 0
+
+                if normalized_name and normalized_name in searchable_text:
+                    score += 10
+
+                category_tokens = [token for token in re.split(r"[^a-z0-9äöüß]+", normalized_name) if len(token) > 2]
+                score += sum(1 for token in category_tokens if token in searchable_text)
+
+                for hint_category, hints in synonym_hints.items():
+                    if hint_category in normalized_name and any(hint in searchable_text for hint in hints):
+                        score += 6
+
+                if score > best_score:
+                    best_score = score
+                    best_match = category
+
+            if best_match and best_score > 0:
+                logger.info(
+                    f"Fast category detection matched: {best_match['name']} "
+                    f"(ID: {best_match['id']}, score: {best_score})"
+                )
+                return best_match["id"]
+
+            logger.info("Fast category detection found no confident match; falling back to OpenAI")
+            return None
+
+        except Exception as e:
+            logger.warning(f"Fast category detection failed: {e}")
+            return None
 
     def _create_shorts_entry(self, user_id: str, product_info, target_language: Optional[str] = None):
         """
@@ -1448,7 +1517,6 @@ class ScrapingService:
             str: Detected category ID (UUID) or None if detection fails
         """
         try:
-            from app.utils.supabase_utils import get_categories
             import openai
             
             # Check if OpenAI API key is configured
@@ -1457,13 +1525,7 @@ class ScrapingService:
                 return None
             
             # Get categories from database
-            categories = get_categories()
-            if not categories:
-                logger.warning("No categories found in database, skipping category detection")
-                return None
-            
-            # Filter to only include sub-categories (those with parent_id)
-            sub_categories = [cat for cat in categories if cat.get('parent_id')]
+            sub_categories = self._get_sub_categories()
             if not sub_categories:
                 logger.warning("No sub-categories found in database, skipping category detection")
                 return None
@@ -1474,21 +1536,22 @@ class ScrapingService:
                 'description': getattr(product_info, 'description', '') or '',
                 'specifications': getattr(product_info, 'specifications', {}) or {}
             }
+            compact_specs = dict(list(product_info_text['specifications'].items())[:12])
             
             # Create prompt for category detection
-            prompt = f"""Analyze the following product information and determine the most appropriate sub-category name from the provided list:
+            prompt = f"""Choose the best sub-category for this product.
 
 Product Title: {product_info_text['title']}
-Product Description: {product_info_text['description'][:500]}
-Product Specifications: {', '.join([f"{k}: {v}" for k, v in product_info_text['specifications'].items()])}
+Product Description: {product_info_text['description'][:220]}
+Product Specifications: {', '.join([f"{k}: {v}" for k, v in compact_specs.items()])}
 
-Please respond with ONLY the exact category name from the list below. Do not include any other text or explanation.
+Respond with ONLY the exact category name from the list below.
 
 Available sub-categories:
 {chr(10).join([f"- {cat['name']}" for cat in sub_categories])}"""
             
             # Initialize OpenAI client
-            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY)
+            client = openai.OpenAI(api_key=settings.OPENAI_API_KEY, timeout=8.0)
             
             logger.info("Sending category detection request to OpenAI...")
             
@@ -1498,13 +1561,15 @@ Available sub-categories:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You are a product categorization expert. Choose the most appropriate sub-category from the provided list. Respond with ONLY the exact category name, no other text."
+                        "content": "Choose the most appropriate sub-category. Return only the exact category name."
                     },
                     {
                         "role": "user",
                         "content": prompt
                     }
-                ]
+                ],
+                max_tokens=30,
+                temperature=0,
             )
             
             logger.info("OpenAI response received")
