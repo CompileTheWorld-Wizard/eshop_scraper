@@ -233,7 +233,7 @@ class BrowserManager:
             
             # Scroll to bottom to trigger lazy loading of reviews/ratings
             if settings.BROWSER_ENABLE_SCROLLING:
-                self._scroll_to_trigger_lazy_loading(page)
+                self._scroll_to_trigger_lazy_loading( page )
             
             # Get HTML content
             html_content = page.content()
