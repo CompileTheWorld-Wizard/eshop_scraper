@@ -98,30 +98,29 @@ class OttoExtractor(BaseExtractor):
     
     def extract_price(self) -> Optional[float]:
         """Extract product price"""
+        price_cents_element = self.soup.select_one('.js_pdp_price__tag[data-price-cents]')
+        if price_cents_element and price_cents_element.get("data-price-cents"):
+            try:
+                return int(price_cents_element["data-price-cents"]) / 100
+            except (ValueError, TypeError):
+                pass
+
+        price_selectors = [
+            '.pdp_price__price-parts',
+            '.js_pdp_price__retail-price__value_original',
+        ]
+        
+        for selector in price_selectors:
+            price = self.extract_price_value(selector)
+            if price:
+                return price
+
         product_schema = self._get_product_schema()
         offers = product_schema.get("offers") if product_schema else {}
         if isinstance(offers, dict):
             schema_price = self._parse_number(offers.get("price"))
             if schema_price:
                 return schema_price
-
-        price_selectors = [
-            '.js_pdp_price__tag[data-price-cents]',
-            '.pdp_price__price-parts',
-            '.js_pdp_price__retail-price__value_original',
-        ]
-        
-        for selector in price_selectors:
-            element = self.soup.select_one(selector)
-            if element and element.get("data-price-cents"):
-                try:
-                    return int(element["data-price-cents"]) / 100
-                except (ValueError, TypeError):
-                    pass
-
-            price = self.extract_price_value(selector)
-            if price:
-                return price
         return None
     
     def extract_currency(self) -> Optional[str]:

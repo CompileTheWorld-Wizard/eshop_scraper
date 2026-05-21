@@ -3,7 +3,7 @@ import time
 import re
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 import requests
 from app.models import ProductInfo, TaskStatusResponse, TaskStatus, TaskPriority
 from app.utils import generate_task_id, proxy_manager, user_agent_manager, is_valid_url
@@ -293,6 +293,12 @@ class ScrapingService:
         domain = urlparse(url).netloc.lower()
         return domain == "otto.de" or domain.endswith(".otto.de")
 
+    def _is_ebay_url(self, url: str) -> bool:
+        """Check whether this request should use the eBay-specific HTML fetcher."""
+        domain = urlparse(url).netloc.lower()
+        clean_domain = domain.removeprefix("www.").removeprefix("m.")
+        return clean_domain == "ebay.com" or clean_domain.startswith("ebay.")
+
     def _fetch_otto_page_content(
         self,
         url: str,
@@ -345,6 +351,66 @@ class ScrapingService:
 
         logger.info(f"Successfully fetched Otto content from {url} (length: {len(response.text)})")
         return response.text
+
+    def _fetch_ebay_page_content(
+        self,
+        url: str,
+        proxy: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> str:
+        """Fetch eBay HTML through the mobile item page, which avoids desktop 403s."""
+        mobile_url = self._to_ebay_mobile_url(url)
+        logger.info(
+            f"Fetching eBay page content with direct mobile HTTP request - "
+            f"Proxy: {proxy is not None}"
+        )
+
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "max-age=0",
+            "Referer": "https://www.ebay.com/",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": user_agent or (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 "
+                "Mobile/15E148 Safari/604.1"
+            ),
+        }
+
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        response = requests.get(
+            mobile_url,
+            headers=headers,
+            proxies=proxies,
+            timeout=settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0,
+            allow_redirects=True,
+        )
+
+        if response.status_code >= 400 or self._looks_like_access_denied(response.text):
+            raise Exception(f"Failed to load eBay page: {response.status_code}")
+
+        logger.info(f"Successfully fetched eBay content from {mobile_url} (length: {len(response.text)})")
+        return response.text
+
+    def _to_ebay_mobile_url(self, url: str) -> str:
+        """Convert an eBay URL to the mobile host while preserving path/query."""
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        if domain.startswith("www."):
+            mobile_domain = f"m.{domain[4:]}"
+        elif domain.startswith("m."):
+            mobile_domain = domain
+        else:
+            mobile_domain = f"m.{domain}"
+        return urlunparse(parsed._replace(netloc=mobile_domain))
+
+    def _looks_like_access_denied(self, html_content: str) -> bool:
+        """Detect CDN access-denied pages returned with a non-error status."""
+        if not html_content:
+            return True
+        lowered = html_content[:1000].lower()
+        return "access denied" in lowered and "permission to access" in lowered
     
     # ============================================================================
     # PUBLIC API METHODS
@@ -506,6 +572,8 @@ class ScrapingService:
             try:
                 if self._is_otto_url(url):
                     html_content = self._fetch_otto_page_content(url, proxy, user_agent)
+                elif self._is_ebay_url(url):
+                    html_content = self._fetch_ebay_page_content(url, proxy, user_agent)
                 else:
                     from app.browser_manager import browser_manager
                     html_content = browser_manager.get_page_content_with_retry(url, proxy, user_agent, True)
@@ -859,6 +927,8 @@ class ScrapingService:
             update_task_progress(actual_task_id, 2, "Fetching page content")
             if self._is_otto_url(url):
                 html_content = self._fetch_otto_page_content(url, proxy, user_agent)
+            elif self._is_ebay_url(url):
+                html_content = self._fetch_ebay_page_content(url, proxy, user_agent)
             else:
                 from app.browser_manager import browser_manager
                 html_content = browser_manager.get_page_content_with_retry(url, proxy, user_agent, True)

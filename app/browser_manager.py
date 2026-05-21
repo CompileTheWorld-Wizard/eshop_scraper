@@ -10,16 +10,22 @@ logger = get_logger(__name__)
 
 
 class BrowserManager:
-    """Manages Chrome browser instances with configurable headless and proxy settings"""
+    """Manages browser instances with configurable headless and proxy settings"""
     
     def __init__(self):
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.playwright = None
+        self.browser_name: Optional[str] = None
         
-    def setup_browser(self, proxy: Optional[str] = None, user_agent: Optional[str] = None) -> Tuple[Browser, BrowserContext, Page]:
+    def setup_browser(
+        self,
+        proxy: Optional[str] = None,
+        user_agent: Optional[str] = None,
+        browser_name: Optional[str] = None,
+    ) -> Tuple[Browser, BrowserContext, Page]:
         """
-        Setup Chrome browser with optional proxy and user agent
+        Setup browser with optional proxy and user agent
         
         Args:
             proxy: Optional proxy string (e.g., "http://user:pass@host:port")
@@ -33,6 +39,9 @@ class BrowserManager:
             self.cleanup()
             
             self.playwright = sync_playwright().start()
+            selected_browser = browser_name or settings.DEFAULT_BROWSER
+            browser_config = settings.get_browser_config(selected_browser)
+            playwright_browser_name = browser_config.get("name", "chromium")
             
             # Chrome launch arguments for stealth and performance
             launch_args = [
@@ -95,14 +104,40 @@ class BrowserManager:
             # Launch Chrome browser with configurable headless setting
             launch_options = {
                 "headless": settings.PLAYWRIGHT_HEADLESS,
-                "args": launch_args
             }
+            if playwright_browser_name == "chromium":
+                launch_options["args"] = launch_args
+            else:
+                launch_options["args"] = [
+                    arg for arg in browser_config.get("args", [])
+                    if arg != "--devtools"
+                ]
+                if browser_config.get("firefox_user_prefs"):
+                    launch_options["firefox_user_prefs"] = browser_config["firefox_user_prefs"]
             
             if proxy:
                 launch_options["proxy"] = self._build_proxy_config(proxy)
                 logger.info(f"Playwright proxy configured: {self._safe_proxy_label(proxy)}")
             
-            self.browser = self.playwright.chromium.launch(**launch_options)
+            try:
+                browser_launcher = getattr(self.playwright, playwright_browser_name)
+                self.browser = browser_launcher.launch(**launch_options)
+                self.browser_name = selected_browser
+            except Exception as launch_error:
+                if playwright_browser_name == "chromium":
+                    raise
+                logger.warning(
+                    f"Failed to launch configured browser '{selected_browser}' "
+                    f"({launch_error}); falling back to Chromium"
+                )
+                fallback_options = {
+                    "headless": settings.PLAYWRIGHT_HEADLESS,
+                    "args": launch_args
+                }
+                if proxy:
+                    fallback_options["proxy"] = self._build_proxy_config(proxy)
+                self.browser = self.playwright.chromium.launch(**fallback_options)
+                self.browser_name = settings.DEFAULT_BROWSER
             
             # Create browser context with additional settings
             context_options = {
@@ -134,7 +169,10 @@ class BrowserManager:
             page.route("**/*", self._block_resources)
             logger.info("Image blocking enabled by default")
             
-            logger.info(f"Chrome browser setup completed - Headless: {settings.PLAYWRIGHT_HEADLESS}, Proxy: {proxy is not None}")
+            logger.info(
+                f"Browser setup completed - Browser: {self.browser_name}, "
+                f"Headless: {settings.PLAYWRIGHT_HEADLESS}, Proxy: {proxy is not None}"
+            )
             return self.browser, self.context, page
             
         except Exception as e:
@@ -210,9 +248,14 @@ class BrowserManager:
                     if self.browser:
                         self.cleanup()
             
-            # Setup browser if needed
-            if not self.browser:
-                self.setup_browser(proxy=effective_proxy, user_agent=user_agent)
+            requested_browser = self._get_browser_name_for_url(url)
+            
+            # Setup browser if needed. Recreate it when a URL needs a different
+            # browser engine, e.g. eBay is configured to use Firefox.
+            if not self.browser or self.browser_name != requested_browser:
+                if self.browser:
+                    self.cleanup()
+                self.setup_browser(proxy=effective_proxy, user_agent=user_agent, browser_name=requested_browser)
             
             # Create page
             page = self.create_page(user_agent)
@@ -391,8 +434,10 @@ class BrowserManager:
             if self.playwright:
                 self.playwright.stop()
                 self.playwright = None
+            
+            self.browser_name = None
                 
-            logger.info("Chrome browser cleanup completed")
+            logger.info("Browser cleanup completed")
         except Exception as e:
             logger.error(f"Error during browser cleanup: {e}")
         finally:
@@ -400,6 +445,7 @@ class BrowserManager:
             self.context = None
             self.browser = None
             self.playwright = None
+            self.browser_name = None
 
     def _build_proxy_config(self, proxy: str) -> Dict[str, str]:
         """Build Playwright proxy config from an authenticated proxy URL."""
@@ -433,6 +479,11 @@ class BrowserManager:
         """Temporarily disable proxy for Otto scraping verification."""
         domain = urlparse(url).netloc.lower()
         return domain == "otto.de" or domain.endswith(".otto.de")
+
+    def _get_browser_name_for_url(self, url: str) -> str:
+        """Choose the configured browser for the URL domain."""
+        domain = urlparse(url).netloc.lower()
+        return settings.get_browser_for_domain(domain)
 
     def get_page_content_with_retry(self, url: str, proxy: Optional[str] = None, user_agent: Optional[str] = None, max_retries: int = None) -> str:
         """
