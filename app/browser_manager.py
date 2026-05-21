@@ -1,5 +1,6 @@
 import time
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
+from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright, Browser, Page, BrowserContext
 from app.config import settings
 from app.logging_config import get_logger
@@ -91,15 +92,17 @@ class BrowserManager:
                 '--disable-renderer-backgrounding=false',
             ]
             
-            # Add proxy if provided
-            if proxy:
-                launch_args.append(f'--proxy-server={proxy}')
-            
             # Launch Chrome browser with configurable headless setting
-            self.browser = self.playwright.chromium.launch(
-                headless=settings.PLAYWRIGHT_HEADLESS,
-                args=launch_args
-            )
+            launch_options = {
+                "headless": settings.PLAYWRIGHT_HEADLESS,
+                "args": launch_args
+            }
+            
+            if proxy:
+                launch_options["proxy"] = self._build_proxy_config(proxy)
+                logger.info(f"Playwright proxy configured: {self._safe_proxy_label(proxy)}")
+            
+            self.browser = self.playwright.chromium.launch(**launch_options)
             
             # Create browser context with additional settings
             context_options = {
@@ -389,6 +392,34 @@ class BrowserManager:
             self.context = None
             self.browser = None
             self.playwright = None
+
+    def _build_proxy_config(self, proxy: str) -> Dict[str, str]:
+        """Build Playwright proxy config from an authenticated proxy URL."""
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.hostname:
+            return {"server": proxy}
+        
+        server = f"{parsed.scheme}://{parsed.hostname}"
+        if parsed.port:
+            server = f"{server}:{parsed.port}"
+        
+        proxy_config = {"server": server}
+        if parsed.username:
+            proxy_config["username"] = parsed.username
+        if parsed.password:
+            proxy_config["password"] = parsed.password
+        
+        return proxy_config
+
+    def _safe_proxy_label(self, proxy: str) -> str:
+        """Return a log-safe proxy label without credentials."""
+        parsed = urlparse(proxy)
+        if not parsed.scheme or not parsed.hostname:
+            return proxy
+        
+        host = parsed.hostname
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{parsed.scheme}://{host}{port}"
 
     def get_page_content_with_retry(self, url: str, proxy: Optional[str] = None, user_agent: Optional[str] = None, max_retries: int = None) -> str:
         """
