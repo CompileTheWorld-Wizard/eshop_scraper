@@ -243,6 +243,11 @@ class Settings:
     # User Agent Settings
     ROTATE_USER_AGENTS: bool = os.getenv("ROTATE_USER_AGENTS", "True").lower() == "true"
     
+    # Otto Scraping Settings
+    OTTO_COOKIE: str = os.getenv("OTTO_COOKIE", "")
+    OTTO_REFERER: str = os.getenv("OTTO_REFERER", "https://www.otto.de/")
+    OTTO_USER_AGENT: str = os.getenv("OTTO_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
+    
     # Playwright Settings
     PLAYWRIGHT_HEADLESS: bool = os.getenv("PLAYWRIGHT_HEADLESS", "True").lower() == "true"
     PLAYWRIGHT_TIMEOUT: int = int(os.getenv("PLAYWRIGHT_TIMEOUT", "60000"))

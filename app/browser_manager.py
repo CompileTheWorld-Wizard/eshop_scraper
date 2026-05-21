@@ -202,9 +202,17 @@ class BrowserManager:
         """
         page = None
         try:
+            effective_proxy = proxy
+            if self._should_bypass_proxy_for_url(url):
+                if proxy:
+                    logger.info("Temporarily bypassing proxy for Otto verification")
+                    effective_proxy = None
+                    if self.browser:
+                        self.cleanup()
+            
             # Setup browser if needed
             if not self.browser:
-                self.setup_browser(proxy=proxy, user_agent=user_agent)
+                self.setup_browser(proxy=effective_proxy, user_agent=user_agent)
             
             # Create page
             page = self.create_page(user_agent)
@@ -420,6 +428,11 @@ class BrowserManager:
         host = parsed.hostname
         port = f":{parsed.port}" if parsed.port else ""
         return f"{parsed.scheme}://{host}{port}"
+
+    def _should_bypass_proxy_for_url(self, url: str) -> bool:
+        """Temporarily disable proxy for Otto scraping verification."""
+        domain = urlparse(url).netloc.lower()
+        return domain == "otto.de" or domain.endswith(".otto.de")
 
     def get_page_content_with_retry(self, url: str, proxy: Optional[str] = None, user_agent: Optional[str] = None, max_retries: int = None) -> str:
         """

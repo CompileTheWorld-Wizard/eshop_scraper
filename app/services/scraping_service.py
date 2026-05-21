@@ -3,6 +3,8 @@ import time
 import re
 from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
+from urllib.parse import urlparse
+import requests
 from app.models import ProductInfo, TaskStatusResponse, TaskStatus, TaskPriority
 from app.utils import generate_task_id, proxy_manager, user_agent_manager, is_valid_url
 from app.utils.credit_utils import can_perform_action
@@ -285,6 +287,64 @@ class ScrapingService:
                 ],
             }
         }
+
+    def _is_otto_url(self, url: str) -> bool:
+        """Check whether this request should use the Otto-specific HTML fetcher."""
+        domain = urlparse(url).netloc.lower()
+        return domain == "otto.de" or domain.endswith(".otto.de")
+
+    def _fetch_otto_page_content(
+        self,
+        url: str,
+        proxy: Optional[str] = None,
+        user_agent: Optional[str] = None,
+    ) -> str:
+        """Fetch Otto HTML directly so OttoExtractor can parse server-rendered product data."""
+        logger.info(f"Fetching Otto page content with direct HTTP request - Proxy: {proxy is not None}")
+        otto_user_agent = settings.OTTO_USER_AGENT
+
+        headers = {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cache-Control": "max-age=0",
+            "Priority": "u=0, i",
+            "Referer": settings.OTTO_REFERER,
+            "Sec-CH-UA": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+            "Sec-CH-UA-Arch": '"x86"',
+            "Sec-CH-UA-Bitness": '"64"',
+            "Sec-CH-UA-Full-Version-List": '"Google Chrome";v="147.0.7727.138", "Not.A/Brand";v="8.0.0.0", "Chromium";v="147.0.7727.138"',
+            "Sec-CH-UA-Mobile": "?0",
+            "Sec-CH-UA-Model": '""',
+            "Sec-CH-UA-Platform": '"Windows"',
+            "Sec-CH-UA-Platform-Version": '"10.0.0"',
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": otto_user_agent,
+        }
+
+        if settings.OTTO_COOKIE:
+            headers["Cookie"] = settings.OTTO_COOKIE
+            logger.info("Using configured Otto cookie for direct HTTP request")
+        else:
+            logger.warning("OTTO_COOKIE is not configured; Otto direct HTTP request may be rate-limited")
+
+        proxies = {"http": proxy, "https": proxy} if proxy else None
+        session = requests.Session()
+        response = session.get(
+            url,
+            headers=headers,
+            proxies=proxies,
+            timeout=settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0,
+        )
+
+        if response.status_code >= 400:
+            raise Exception(f"Failed to load Otto page: {response.status_code}")
+
+        logger.info(f"Successfully fetched Otto content from {url} (length: {len(response.text)})")
+        return response.text
     
     # ============================================================================
     # PUBLIC API METHODS
@@ -435,16 +495,20 @@ class ScrapingService:
             if not user_agent and settings.ROTATE_USER_AGENTS:
                 user_agent = user_agent_manager.get_user_agent()
             
-            # First, get HTML content using browser manager with retry logic
+            # First, get HTML content. Otto pages expose stable server-rendered
+            # product data, so fetch them directly instead of using Playwright.
             update_task_progress(task_id, 2, "Fetching page content")
-            from app.browser_manager import browser_manager
             
             # Use timeout logic to prevent blocking
             start_time = time.time()
             timeout_seconds = settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0
             
             try:
-                html_content = browser_manager.get_page_content_with_retry(url, proxy, user_agent, True)
+                if self._is_otto_url(url):
+                    html_content = self._fetch_otto_page_content(url, proxy, user_agent)
+                else:
+                    from app.browser_manager import browser_manager
+                    html_content = browser_manager.get_page_content_with_retry(url, proxy, user_agent, True)
                 
                 # Check if we exceeded timeout
                 if time.time() - start_time > timeout_seconds:
@@ -790,10 +854,14 @@ class ScrapingService:
             if not user_agent and settings.ROTATE_USER_AGENTS:
                 user_agent = user_agent_manager.get_user_agent()
             
-            # First, get HTML content using browser manager
+            # First, get HTML content. Otto pages expose stable server-rendered
+            # product data, so fetch them directly instead of using Playwright.
             update_task_progress(actual_task_id, 2, "Fetching page content")
-            from app.browser_manager import browser_manager
-            html_content = browser_manager.get_page_content_with_retry(url, proxy, user_agent, True)
+            if self._is_otto_url(url):
+                html_content = self._fetch_otto_page_content(url, proxy, user_agent)
+            else:
+                from app.browser_manager import browser_manager
+                html_content = browser_manager.get_page_content_with_retry(url, proxy, user_agent, True)
             
             # Detect platform based on URL and content
             update_task_progress(actual_task_id, 3, "Detecting e-commerce platform")
