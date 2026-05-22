@@ -337,20 +337,52 @@ class ScrapingService:
         else:
             logger.warning("OTTO_COOKIE is not configured; Otto direct HTTP request may be rate-limited")
 
-        proxies = {"http": proxy, "https": proxy} if proxy else None
         session = requests.Session()
-        response = session.get(
-            url,
-            headers=headers,
-            proxies=proxies,
-            timeout=settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0,
-        )
+        max_attempts = max(1, settings.BROWSER_MAX_RETRIES + 1)
+        current_proxy = proxy
+        response = None
 
-        if response.status_code >= 400:
-            raise Exception(f"Failed to load Otto page: {response.status_code}")
+        for attempt in range(max_attempts):
+            proxies = {"http": current_proxy, "https": current_proxy} if current_proxy else None
+            response = session.get(
+                url,
+                headers=headers,
+                proxies=proxies,
+                timeout=settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0,
+            )
+
+            if response.status_code < 400:
+                break
+
+            if response.status_code != 429 or attempt == max_attempts - 1:
+                raise Exception(f"Failed to load Otto page: {response.status_code}")
+
+            retry_delay = self._get_retry_delay(response, attempt)
+            logger.warning(
+                f"Otto returned 429 on attempt {attempt + 1}/{max_attempts}; "
+                f"retrying after {retry_delay:.1f}s"
+            )
+
+            if settings.ROTATE_PROXIES:
+                rotated_proxy = proxy_manager.rotate_proxy()
+                if rotated_proxy:
+                    current_proxy = rotated_proxy
+                    logger.info("Rotated proxy after Otto rate limit response")
+
+            time.sleep(retry_delay)
 
         logger.info(f"Successfully fetched Otto content from {url} (length: {len(response.text)})")
         return response.text
+
+    def _get_retry_delay(self, response: requests.Response, attempt: int) -> float:
+        """Calculate retry delay from Retry-After or exponential backoff."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after:
+            try:
+                return min(float(retry_after), 30.0)
+            except ValueError:
+                logger.debug(f"Ignoring non-numeric Retry-After header: {retry_after}")
+        return min(2 ** attempt, 30.0)
 
     def _fetch_ebay_page_content(
         self,
