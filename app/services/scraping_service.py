@@ -337,19 +337,22 @@ class ScrapingService:
         else:
             logger.warning("OTTO_COOKIE is not configured; Otto direct HTTP request may be rate-limited")
 
-        session = requests.Session()
         max_attempts = max(1, settings.BROWSER_MAX_RETRIES + 1)
         current_proxy = proxy
         response = None
 
         for attempt in range(max_attempts):
+            session = requests.Session()
             proxies = {"http": current_proxy, "https": current_proxy} if current_proxy else None
-            response = session.get(
-                url,
-                headers=headers,
-                proxies=proxies,
-                timeout=settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0,
-            )
+            try:
+                response = session.get(
+                    url,
+                    headers=headers,
+                    proxies=proxies,
+                    timeout=settings.BROWSER_PAGE_FETCH_TIMEOUT / 1000.0,
+                )
+            finally:
+                session.close()
 
             if response.status_code < 400:
                 break
@@ -363,11 +366,14 @@ class ScrapingService:
                 f"retrying after {retry_delay:.1f}s"
             )
 
-            if settings.ROTATE_PROXIES:
+            if current_proxy and settings.ROTATE_PROXIES and attempt < max_attempts - 2:
                 rotated_proxy = proxy_manager.rotate_proxy()
                 if rotated_proxy:
                     current_proxy = rotated_proxy
                     logger.info("Rotated proxy after Otto rate limit response")
+            elif current_proxy:
+                current_proxy = None
+                logger.info("Retrying Otto without proxy after repeated rate limit responses")
 
             time.sleep(retry_delay)
 
