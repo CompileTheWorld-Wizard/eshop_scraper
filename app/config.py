@@ -247,6 +247,10 @@ class Settings:
     OTTO_COOKIE: str = os.getenv("OTTO_COOKIE", "")
     OTTO_REFERER: str = os.getenv("OTTO_REFERER", "https://www.otto.de/")
     OTTO_USER_AGENT: str = os.getenv("OTTO_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
+    OTTO_AUTO_COOKIE_REFRESH: bool = os.getenv("OTTO_AUTO_COOKIE_REFRESH", "True").lower() == "true"
+    OTTO_COOKIE_CACHE_PATH: str = os.getenv("OTTO_COOKIE_CACHE_PATH", "data/otto_cookies.json")
+    OTTO_COOKIE_REFRESH_URL: str = os.getenv("OTTO_COOKIE_REFRESH_URL", "https://www.otto.de/")
+    OTTO_COOKIE_MIN_TTL_SECONDS: int = int(os.getenv("OTTO_COOKIE_MIN_TTL_SECONDS", "300"))
     
     # Playwright Settings
     PLAYWRIGHT_HEADLESS: bool = os.getenv("PLAYWRIGHT_HEADLESS", "True").lower() == "true"

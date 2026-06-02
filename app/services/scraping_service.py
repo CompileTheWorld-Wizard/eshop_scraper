@@ -13,6 +13,7 @@ from app.utils.task_management import (
     complete_task, fail_task, get_task_status, TaskType, TaskStatus as TMStatus
 )
 from app.config import settings
+from app.services.otto_cookie_service import otto_cookie_service
 from bs4 import BeautifulSoup
 from app.logging_config import get_logger
 
@@ -331,15 +332,17 @@ class ScrapingService:
             "User-Agent": otto_user_agent,
         }
 
-        if settings.OTTO_COOKIE:
-            headers["Cookie"] = settings.OTTO_COOKIE
-            logger.info("Using configured Otto cookie for direct HTTP request")
+        cookie_header = otto_cookie_service.get_cookie_header(url, proxy, otto_user_agent)
+        if cookie_header:
+            headers["Cookie"] = cookie_header
+            logger.info("Using Otto cookie for direct HTTP request")
         else:
-            logger.warning("OTTO_COOKIE is not configured; Otto direct HTTP request may be rate-limited")
+            logger.warning("No Otto cookie is available; Otto direct HTTP request may be rate-limited")
 
         max_attempts = max(1, settings.BROWSER_MAX_RETRIES + 1)
         current_proxy = proxy
         response = None
+        refreshed_cookie_after_rejection = False
 
         for attempt in range(max_attempts):
             session = requests.Session()
@@ -354,8 +357,30 @@ class ScrapingService:
             finally:
                 session.close()
 
-            if response.status_code < 400:
+            otto_rejected_request = (
+                response.status_code in {403, 429}
+                or self._looks_like_otto_rejection(response.text)
+            )
+            if response.status_code < 400 and not otto_rejected_request:
                 break
+
+            if otto_rejected_request and not refreshed_cookie_after_rejection:
+                refreshed_cookie_after_rejection = True
+                logger.warning("Otto rejected current cookie; refreshing Otto cookies and retrying once")
+                otto_cookie_service.invalidate_cache()
+                refreshed_cookie_header = otto_cookie_service.get_cookie_header(
+                    url,
+                    current_proxy,
+                    otto_user_agent,
+                    force_refresh=True,
+                )
+                if refreshed_cookie_header:
+                    headers["Cookie"] = refreshed_cookie_header
+                    continue
+                headers.pop("Cookie", None)
+
+            if response.status_code < 400 and otto_rejected_request:
+                raise Exception("Failed to load Otto page: Otto returned an anti-bot page")
 
             if response.status_code != 429 or attempt == max_attempts - 1:
                 raise Exception(f"Failed to load Otto page: {response.status_code}")
@@ -370,9 +395,29 @@ class ScrapingService:
                 rotated_proxy = proxy_manager.rotate_proxy()
                 if rotated_proxy:
                     current_proxy = rotated_proxy
+                    rotated_cookie_header = otto_cookie_service.get_cookie_header(
+                        url,
+                        current_proxy,
+                        otto_user_agent,
+                        force_refresh=True,
+                    )
+                    if rotated_cookie_header:
+                        headers["Cookie"] = rotated_cookie_header
+                    else:
+                        headers.pop("Cookie", None)
                     logger.info("Rotated proxy after Otto rate limit response")
             elif current_proxy:
                 current_proxy = None
+                direct_cookie_header = otto_cookie_service.get_cookie_header(
+                    url,
+                    None,
+                    otto_user_agent,
+                    force_refresh=True,
+                )
+                if direct_cookie_header:
+                    headers["Cookie"] = direct_cookie_header
+                else:
+                    headers.pop("Cookie", None)
                 logger.info("Retrying Otto without proxy after repeated rate limit responses")
 
             time.sleep(retry_delay)
@@ -449,6 +494,24 @@ class ScrapingService:
             return True
         lowered = html_content[:1000].lower()
         return "access denied" in lowered and "permission to access" in lowered
+
+    def _looks_like_otto_rejection(self, html_content: str) -> bool:
+        """Detect Otto anti-bot or rate-limit pages returned with a success status."""
+        if not html_content:
+            return True
+
+        lowered = html_content[:5000].lower()
+        rejection_markers = [
+            "access denied",
+            "too many requests",
+            "captcha",
+            "unusual traffic",
+            "automated traffic",
+            "bot detection",
+            "datadome",
+            "perimeterx",
+        ]
+        return any(marker in lowered for marker in rejection_markers)
     
     # ============================================================================
     # PUBLIC API METHODS
