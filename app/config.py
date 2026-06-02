@@ -246,11 +246,26 @@ class Settings:
     # Otto Scraping Settings
     OTTO_COOKIE: str = os.getenv("OTTO_COOKIE", "")
     OTTO_REFERER: str = os.getenv("OTTO_REFERER", "https://www.otto.de/")
-    OTTO_USER_AGENT: str = os.getenv("OTTO_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36")
+    OTTO_USER_AGENT: str = os.getenv("OTTO_USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36")
     OTTO_AUTO_COOKIE_REFRESH: bool = os.getenv("OTTO_AUTO_COOKIE_REFRESH", "True").lower() == "true"
     OTTO_COOKIE_CACHE_PATH: str = os.getenv("OTTO_COOKIE_CACHE_PATH", "data/otto_cookies.json")
     OTTO_COOKIE_REFRESH_URL: str = os.getenv("OTTO_COOKIE_REFRESH_URL", "https://www.otto.de/")
     OTTO_COOKIE_MIN_TTL_SECONDS: int = int(os.getenv("OTTO_COOKIE_MIN_TTL_SECONDS", "300"))
+    OTTO_BROWSER_FALLBACK_ENABLED: bool = os.getenv("OTTO_BROWSER_FALLBACK_ENABLED", "False").lower() == "true"
+    OTTO_COOKIE_BROWSER_CHANNEL: str = os.getenv("OTTO_COOKIE_BROWSER_CHANNEL", "chrome")
+    OTTO_COOKIE_PROFILE_PATH: str = os.getenv("OTTO_COOKIE_PROFILE_PATH", "data/otto_chrome_profile")
+    OTTO_COOKIE_REFRESH_WAIT_MS: int = int(os.getenv("OTTO_COOKIE_REFRESH_WAIT_MS", "8000"))
+    OTTO_COOKIE_REFRESH_HEADLESS: bool = os.getenv("OTTO_COOKIE_REFRESH_HEADLESS", "False").lower() == "true"
+    OTTO_COOKIE_REQUIRED_NAMES: List[str] = [
+        name.strip()
+        for name in os.getenv("OTTO_COOKIE_REQUIRED_NAMES", "KP_UIDz,KP_UIDz-ssn").split(",")
+        if name.strip()
+    ]
+    OTTO_COOKIE_REQUIRED_WAIT_MS: int = int(os.getenv("OTTO_COOKIE_REQUIRED_WAIT_MS", "90000"))
+    OTTO_CURL_IMPERSONATE: str = os.getenv("OTTO_CURL_IMPERSONATE", "chrome")
+    OTTO_USE_EXISTING_CHROME: bool = os.getenv("OTTO_USE_EXISTING_CHROME", "False").lower() == "true"
+    OTTO_EXISTING_CHROME_CDP_URL: str = os.getenv("OTTO_EXISTING_CHROME_CDP_URL", "http://127.0.0.1:9222")
+    OTTO_CLOSE_CHROME_TAB_AFTER_REFRESH: bool = os.getenv("OTTO_CLOSE_CHROME_TAB_AFTER_REFRESH", "True").lower() == "true"
     
     # Playwright Settings
     PLAYWRIGHT_HEADLESS: bool = os.getenv("PLAYWRIGHT_HEADLESS", "True").lower() == "true"

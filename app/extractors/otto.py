@@ -60,6 +60,45 @@ class OttoExtractor(BaseExtractor):
         except (TypeError, ValueError):
             return None
 
+    def _normalize_schema_price(self, price: Optional[float]) -> Optional[float]:
+        """Normalize Otto JSON-LD prices that are sometimes exposed as cents."""
+        if price is None:
+            return None
+
+        if price >= 10000:
+            return price / 100
+
+        return price
+
+    def _parse_rating_text(self, value: Any) -> Optional[float]:
+        """Parse Otto rating values, including German decimal comma formats."""
+        if value is None:
+            return None
+
+        text = str(value).strip()
+        if not text:
+            return None
+
+        rating_patterns = [
+            r'(\d(?:[,.]\d)?)\s*(?:von|out of|/)\s*5',
+            r'(\d(?:[,.]\d)?)',
+        ]
+
+        for pattern in rating_patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+
+            try:
+                rating = float(match.group(1).replace(",", "."))
+            except (TypeError, ValueError):
+                continue
+
+            if 0 < rating <= 5:
+                return rating
+
+        return None
+
     def _normalize_image_url(self, image_url: str) -> Optional[str]:
         """Normalize Otto image URLs from JSON-LD or HTML attributes."""
         if not image_url:
@@ -118,7 +157,7 @@ class OttoExtractor(BaseExtractor):
         product_schema = self._get_product_schema()
         offers = product_schema.get("offers") if product_schema else {}
         if isinstance(offers, dict):
-            schema_price = self._parse_number(offers.get("price"))
+            schema_price = self._normalize_schema_price(self._parse_number(offers.get("price")))
             if schema_price:
                 return schema_price
         return None
@@ -249,22 +288,34 @@ class OttoExtractor(BaseExtractor):
     
     def extract_rating(self) -> Optional[float]:
         """Extract product rating"""
-        product_schema = self._get_product_schema()
-        aggregate_rating = product_schema.get("aggregateRating") if product_schema else {}
-        if isinstance(aggregate_rating, dict):
-            schema_rating = self._parse_number(aggregate_rating.get("ratingValue"))
-            if schema_rating:
-                return schema_rating
-
         rating_selectors = [
             '.pdp_cr-rating-score',
             '.js_pdp_cr-rating-score',
+            '[data-qa="rating-stars"]',
+            '[aria-label*="Stern"]',
+            '[aria-label*="Bewertung"]',
         ]
         
         for selector in rating_selectors:
-            rating = self.extract_rating_from_element(selector)
+            element = self.soup.select_one(selector)
+            if not element:
+                continue
+
+            rating = self._parse_rating_text(element.get_text(" ", strip=True))
             if rating:
                 return rating
+
+            for attr in ("aria-label", "title", "data-rating", "data-score", "content"):
+                rating = self._parse_rating_text(element.get(attr))
+                if rating:
+                    return rating
+
+        product_schema = self._get_product_schema()
+        aggregate_rating = product_schema.get("aggregateRating") if product_schema else {}
+        if isinstance(aggregate_rating, dict):
+            schema_rating = self._parse_rating_text(str(aggregate_rating.get("ratingValue", "")))
+            if schema_rating:
+                return schema_rating
         return None
     
     def extract_review_count(self) -> Optional[int]:

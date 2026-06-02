@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from datetime import datetime
 from urllib.parse import urlparse, urlunparse
 import requests
+from curl_cffi import requests as curl_requests
 from app.models import ProductInfo, TaskStatusResponse, TaskStatus, TaskPriority
 from app.utils import generate_task_id, proxy_manager, user_agent_manager, is_valid_url
 from app.utils.credit_utils import can_perform_action
@@ -312,14 +313,15 @@ class ScrapingService:
 
         headers = {
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
             "Accept-Language": "en-US,en;q=0.9",
             "Cache-Control": "max-age=0",
             "Priority": "u=0, i",
-            "Referer": settings.OTTO_REFERER,
-            "Sec-CH-UA": '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+            "Referer": url or settings.OTTO_REFERER,
+            "Sec-CH-UA": '"Chromium";v="148", "Google Chrome";v="148", "Not/A)Brand";v="99"',
             "Sec-CH-UA-Arch": '"x86"',
             "Sec-CH-UA-Bitness": '"64"',
-            "Sec-CH-UA-Full-Version-List": '"Google Chrome";v="147.0.7727.138", "Not.A/Brand";v="8.0.0.0", "Chromium";v="147.0.7727.138"',
+            "Sec-CH-UA-Full-Version-List": '"Chromium";v="148.0.7778.179", "Google Chrome";v="148.0.7778.179", "Not/A)Brand";v="99.0.0.0"',
             "Sec-CH-UA-Mobile": "?0",
             "Sec-CH-UA-Model": '""',
             "Sec-CH-UA-Platform": '"Windows"',
@@ -332,7 +334,12 @@ class ScrapingService:
             "User-Agent": otto_user_agent,
         }
 
-        cookie_header = otto_cookie_service.get_cookie_header(url, proxy, otto_user_agent)
+        cookie_header = otto_cookie_service.get_cookie_header(
+            url,
+            proxy,
+            otto_user_agent,
+            force_refresh=True,
+        )
         if cookie_header:
             headers["Cookie"] = cookie_header
             logger.info("Using Otto cookie for direct HTTP request")
@@ -345,7 +352,7 @@ class ScrapingService:
         refreshed_cookie_after_rejection = False
 
         for attempt in range(max_attempts):
-            session = requests.Session()
+            session = curl_requests.Session(impersonate=settings.OTTO_CURL_IMPERSONATE)
             proxies = {"http": current_proxy, "https": current_proxy} if current_proxy else None
             try:
                 response = session.get(
@@ -380,9 +387,15 @@ class ScrapingService:
                 headers.pop("Cookie", None)
 
             if response.status_code < 400 and otto_rejected_request:
+                if settings.OTTO_BROWSER_FALLBACK_ENABLED:
+                    logger.warning("Direct Otto request returned anti-bot HTML; using Playwright fallback")
+                    return otto_cookie_service.get_page_content(url, current_proxy, otto_user_agent)
                 raise Exception("Failed to load Otto page: Otto returned an anti-bot page")
 
             if response.status_code != 429 or attempt == max_attempts - 1:
+                if response.status_code in {403, 429} and settings.OTTO_BROWSER_FALLBACK_ENABLED:
+                    logger.warning(f"Direct Otto request returned {response.status_code}; using Playwright fallback")
+                    return otto_cookie_service.get_page_content(url, current_proxy, otto_user_agent)
                 raise Exception(f"Failed to load Otto page: {response.status_code}")
 
             retry_delay = self._get_retry_delay(response, attempt)

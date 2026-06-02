@@ -12,6 +12,9 @@
 .cursor
 __pycache__
 
+# Local browser profiles
+data/otto_chrome_profile/
+
 # Logs
 logs/
 *.log
@@ -21,3 +24,5 @@ logs/
 
 #temp
 temp/
+
+otto.txt
